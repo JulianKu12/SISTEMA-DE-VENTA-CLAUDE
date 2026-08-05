@@ -11,5 +11,8 @@ export const TIPOS_MOVIMIENTO_INVENTARIO = [
   'Cancelacion_regreso',
 ]
 export const MOTIVOS_AJUSTE = ['Conteo_fisico', 'Merma', 'Otro']
+export const CATEGORIAS_GASTO = ['Insumos', 'Servicios', 'Sueldos', 'Otro']
+export const MOTIVOS_DEVOLUCION = ['Producto_mal_estado', 'Pedido_incorrecto', 'Cliente_insatisfecho', 'Otro']
+export const MEDIOS_DEVOLUCION = ['Efectivo', 'Tarjeta', 'Transferencia', 'Efectivo_de_caja']
 
 export const esEnumValido = (valor, valores) => valores.includes(valor)

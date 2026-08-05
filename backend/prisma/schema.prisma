@@ -330,6 +330,7 @@ model Dia_Operativo {
   fechaCierre     DateTime?
   fondoInicial    Float
   efectivoContado Float?
+  diferencia      Float?
   estado          EstadoDiaOperativo @default(Abierto)
   usuarioId       Int
 
@@ -363,10 +364,10 @@ model Devolucion {
   medioDevolucion    MedioDevolucion
   regresaAInventario Boolean          @default(false)
   fechaHora          DateTime         @default(now())
-  diaOperativoId     Int
+  diaOperativoId     Int?
 
   venta        Venta         @relation(fields: [ventaId], references: [id])
-  diaOperativo Dia_Operativo @relation(fields: [diaOperativoId], references: [id])
+  diaOperativo Dia_Operativo? @relation(fields: [diaOperativoId], references: [id])
 }
 
 // ---------------------------------------------------------------------------

@@ -58,7 +58,9 @@ function aplicarModificadores(basePorUnidad, modificadoresDetallados) {
 
 // Procesa UN ítem de la venta y acumula sus requerimientos de inventario.
 // Devuelve el detalle listo para crear el Venta_Producto.
-async function procesarItem(tx, item, requerimientos) {
+// `opciones.ignorarEstado` permite recalcular el consumo de un producto ya
+// vendido (p. ej. devoluciones) aunque hoy esté inactivo.
+async function procesarItem(tx, item, requerimientos, opciones = {}) {
   const producto = await tx.producto.findUnique({
     where: { id: Number(item.productoId) },
     include: {
@@ -67,7 +69,7 @@ async function procesarItem(tx, item, requerimientos) {
     },
   })
   if (!producto) throw new HttpError(404, `El producto ${item.productoId} no existe`)
-  if (producto.estado === 'Inactivo') {
+  if (!opciones.ignorarEstado && producto.estado === 'Inactivo') {
     throw new HttpError(400, `El producto "${producto.nombre}" está inactivo`)
   }
 
@@ -177,16 +179,43 @@ async function procesarItem(tx, item, requerimientos) {
   }
 }
 
-export const crearVenta = asyncHandler(async (req, res) => {
-  const {
-    productos,
-    metodoPago,
-    noCobrar = false,
-    esVentaPreviaApertura = false,
-    pedidoId = null,
-    usarDisponible,
-  } = req.body
+// Recalcula el consumo de inventario de un Venta_Producto ya guardado (usado
+// por devoluciones parciales para saber QUÉ ingredientes regresar). Reutiliza
+// la misma lógica de procesarItem (modificadores, mitad y mitad, reventa).
+// Devuelve un Map `'ingrediente:id'|'producto:id' -> cantidad`.
+export async function calcularConsumoVentaProducto(tx, ventaProducto, opciones = {}) {
+  const requerimientos = new Map()
+  const item = {
+    productoId: ventaProducto.productoId,
+    cantidad: ventaProducto.cantidad,
+    esMitadYMitad: ventaProducto.esMitadYMitad,
+  }
+  if (ventaProducto.esMitadYMitad && ventaProducto.mitadYMitad) {
+    item.sabor1ProductoId = ventaProducto.mitadYMitad.sabor1ProductoId
+    item.sabor2ProductoId = ventaProducto.mitadYMitad.sabor2ProductoId
+  }
+  if (Array.isArray(ventaProducto.modificadores) && ventaProducto.modificadores.length > 0) {
+    item.modificadores = ventaProducto.modificadores.map((m) => ({ modificadorId: m.modificadorId }))
+  }
+  await procesarItem(tx, item, requerimientos, opciones)
+  return requerimientos
+}
 
+// Crea una Venta reutilizando la lógica del Módulo 04. Se ejecuta dentro de la
+// transacción del llamador (`tx`), de modo que puede componerse con otras
+// operaciones (p. ej. ventas previas a apertura dentro de abrir caja — Módulo 05).
+// Devuelve { conflicto, faltantes, mensaje } si falta stock sin confirmar, o
+// { venta, usos } si se registró correctamente.
+export async function ejecutarVenta(tx, {
+  productos,
+  metodoPago,
+  noCobrar = false,
+  esVentaPreviaApertura = false,
+  pedidoId = null,
+  usarDisponible,
+  usuarioId,
+  diaOperativoId,
+}) {
   if (!Array.isArray(productos) || productos.length === 0) {
     throw new HttpError(400, 'Una venta requiere al menos un producto')
   }
@@ -195,6 +224,160 @@ export const crearVenta = asyncHandler(async (req, res) => {
     throw new HttpError(400, 'metodoPago inválido')
   }
 
+  let pedidoIdResuelto = null
+  if (pedidoId != null) {
+    const pedido = await tx.pedido.findUnique({ where: { id: Number(pedidoId) } })
+    if (!pedido) throw new HttpError(404, 'El pedido indicado no existe')
+    pedidoIdResuelto = pedido.id
+  }
+
+  const confirmados = normalizarUsarDisponible(usarDisponible)
+  const confirmarTodo = usarDisponible === true
+
+  // 1) Calcular cuánto consume cada ítem y acumular requerimientos.
+  const requerimientos = new Map()
+  const itemsProcesados = []
+  for (const item of productos) {
+    const detalle = await procesarItem(tx, item, requerimientos)
+    itemsProcesados.push(detalle)
+  }
+
+  // 2) Validar stock contra la suma de movimientos de cada cuenta.
+  const stocks = new Map()
+  const faltantes = []
+  for (const [key, requerido] of requerimientos) {
+    const [tipo, id] = key.split(':')
+    const disponible = await stockDe(tx, tipo, Number(id))
+    stocks.set(key, disponible)
+    if (disponible < requerido) {
+      faltantes.push({ tipo, id: Number(id), requerido, disponible })
+    }
+  }
+
+  // 3) Si falta stock y el usuario NO confirmó esos ingredientes: responder
+  //    con la cantidad disponible, SIN completar la venta.
+  const sinConfirmar = faltantes.filter(
+    (f) => !confirmarTodo && !confirmados.has(`${f.tipo}:${f.id}`)
+  )
+  if (sinConfirmar.length > 0) {
+    return {
+      conflicto: true,
+      faltantes,
+      mensaje:
+        'Stock insuficiente. Confirma qué ingredientes se usarán con la cantidad disponible para continuar (usarDisponible).',
+    }
+  }
+
+  // 4) Calcular la cantidad REAL a descontar: para los confirmados con stock
+  //    insuficiente se descuenta solo lo disponible (queda en 0, no negativo).
+  const usos = []
+  for (const [key, requerido] of requerimientos) {
+    const [tipo, id] = key.split(':')
+    const disponible = stocks.get(key)
+    if (disponible >= requerido) {
+      usos.push({ tipo, id: Number(id), cantidad: requerido })
+    } else if (confirmarTodo || confirmados.has(key)) {
+      usos.push({ tipo, id: Number(id), cantidad: disponible })
+    } else {
+      // No debería llegar: sinConfirmar habría frenado antes.
+      usos.push({ tipo, id: Number(id), cantidad: requerido })
+    }
+  }
+
+  // 5) Crear la Venta y sus detalles dentro de la misma transacción.
+  let total = 0
+  const detalleProductos = itemsProcesados.map((d) => {
+    const subtotalModificadores = d.modificadores.reduce((acc, m) => acc + m.costoAplicado, 0)
+    total += (d.precioCongelado + subtotalModificadores) * d.cantidad
+    return d
+  })
+
+  const venta = await tx.venta.create({
+    data: {
+      pedidoId: pedidoIdResuelto,
+      total,
+      metodoPago: noCobrar ? 'Efectivo' : (metodoPago ?? 'Efectivo'),
+      noCobrar,
+      esVentaPreviaApertura,
+      usuarioId,
+      diaOperativoId,
+    },
+  })
+
+  for (const d of detalleProductos) {
+    const ventaProducto = await tx.venta_Producto.create({
+      data: {
+        ventaId: venta.id,
+        productoId: d.productoId,
+        cantidad: d.cantidad,
+        precioCongelado: d.precioCongelado,
+        esMitadYMitad: d.esMitadYMitad,
+      },
+    })
+
+    if (d.esMitadYMitad) {
+      await tx.venta_Producto_Mitad.create({
+        data: {
+          ventaProductoId: ventaProducto.id,
+          sabor1ProductoId: d.sabor1ProductoId,
+          sabor2ProductoId: d.sabor2ProductoId,
+        },
+      })
+    }
+
+    for (const m of d.modificadores) {
+      await tx.venta_Producto_Modificador.create({
+        data: {
+          ventaProductoId: ventaProducto.id,
+          modificadorId: m.modificadorId,
+          costoAplicado: m.costoAplicado,
+        },
+      })
+    }
+  }
+
+  // 6) Movimiento_Inventario tipo Salida_venta, uno por cuenta, con la
+  //    cantidad REAL usada (negativa) y referencia a la venta.
+  for (const u of usos) {
+    await tx.movimiento_Inventario.create({
+      data: {
+        ...(u.tipo === 'ingrediente'
+          ? { ingredienteId: u.id }
+          : { productoId: u.id }),
+        tipoMovimiento: 'Salida_venta',
+        cantidad: -u.cantidad,
+        referenciaId: venta.id,
+        referenciaTipo: 'Venta',
+      },
+    })
+    if (u.tipo === 'ingrediente') {
+      await sincronizarStockIngrediente(tx, u.id)
+    }
+  }
+
+  // Si el pedido existe, dejar también la referencia de solo lectura
+  // Pedido.venta_id apuntando a esta venta.
+  if (pedidoIdResuelto) {
+    await tx.pedido.update({ where: { id: pedidoIdResuelto }, data: { ventaId: venta.id } })
+  }
+
+  const creada = await tx.venta.findUnique({
+    where: { id: venta.id },
+    include: {
+      productos: {
+        include: {
+          producto: { select: { id: true, nombre: true } },
+          mitadYMitad: true,
+          modificadores: { include: { modificador: { select: { id: true, nombre: true } } } },
+        },
+      },
+      diaOperativo: { select: { id: true, estado: true } },
+    },
+  })
+  return { venta: creada, usos }
+}
+
+export const crearVenta = asyncHandler(async (req, res) => {
   // Toda Venta se asocia SIEMPRE al Dia_Operativo en estado Abierto
   // (docs/04, regla crítica).
   const diaOperativo = await prisma.dia_Operativo.findFirst({ where: { estado: 'Abierto' } })
@@ -205,161 +388,20 @@ export const crearVenta = asyncHandler(async (req, res) => {
     )
   }
 
-  let pedidoIdResuelto = null
-  if (pedidoId != null) {
-    const pedido = await prisma.pedido.findUnique({ where: { id: Number(pedidoId) } })
-    if (!pedido) throw new HttpError(404, 'El pedido indicado no existe')
-    pedidoIdResuelto = pedido.id
-  }
+  const usuarioId = await resolverUsuario(prisma, req.body)
 
-  const confirmados = normalizarUsarDisponible(usarDisponible)
-  const confirmarTodo = usarDisponible === true
-
-  const resultado = await prisma.$transaction(async (tx) => {
-    // 1) Calcular cuánto consume cada ítem y acumular requerimientos.
-    const requerimientos = new Map()
-    const itemsProcesados = []
-    for (const item of productos) {
-      const detalle = await procesarItem(tx, item, requerimientos)
-      itemsProcesados.push(detalle)
-    }
-
-    // 2) Validar stock contra la suma de movimientos de cada cuenta.
-    const stocks = new Map()
-    const faltantes = []
-    for (const [key, requerido] of requerimientos) {
-      const [tipo, id] = key.split(':')
-      const disponible = await stockDe(tx, tipo, Number(id))
-      stocks.set(key, disponible)
-      if (disponible < requerido) {
-        faltantes.push({ tipo, id: Number(id), requerido, disponible })
-      }
-    }
-
-    // 3) Si falta stock y el usuario NO confirmó esos ingredientes: responder
-    //    con la cantidad disponible, SIN completar la venta.
-    const sinConfirmar = faltantes.filter(
-      (f) => !confirmarTodo && !confirmados.has(`${f.tipo}:${f.id}`)
-    )
-    if (sinConfirmar.length > 0) {
-      return {
-        conflicto: true,
-        faltantes,
-        mensaje:
-          'Stock insuficiente. Confirma qué ingredientes se usarán con la cantidad disponible para continuar (usarDisponible).',
-      }
-    }
-
-    // 4) Calcular la cantidad REAL a descontar: para los confirmados con stock
-    //    insuficiente se descuenta solo lo disponible (queda en 0, no negativo).
-    const usos = []
-    for (const [key, requerido] of requerimientos) {
-      const [tipo, id] = key.split(':')
-      const disponible = stocks.get(key)
-      if (disponible >= requerido) {
-        usos.push({ tipo, id: Number(id), cantidad: requerido })
-      } else if (confirmarTodo || confirmados.has(key)) {
-        usos.push({ tipo, id: Number(id), cantidad: disponible })
-      } else {
-        // No debería llegar: sinConfirmar habría frenado antes.
-        usos.push({ tipo, id: Number(id), cantidad: requerido })
-      }
-    }
-
-    // 5) Crear la Venta y sus detalles dentro de la misma transacción.
-    const usuarioId = await resolverUsuario(tx, req.body)
-
-    let total = 0
-    const detalleProductos = itemsProcesados.map((d) => {
-      const subtotalModificadores = d.modificadores.reduce((acc, m) => acc + m.costoAplicado, 0)
-      total += (d.precioCongelado + subtotalModificadores) * d.cantidad
-      return d
+  const resultado = await prisma.$transaction((tx) =>
+    ejecutarVenta(tx, {
+      productos: req.body.productos,
+      metodoPago: req.body.metodoPago,
+      noCobrar: req.body.noCobrar,
+      esVentaPreviaApertura: req.body.esVentaPreviaApertura,
+      pedidoId: req.body.pedidoId,
+      usarDisponible: req.body.usarDisponible,
+      usuarioId,
+      diaOperativoId: diaOperativo.id,
     })
-
-    const venta = await tx.venta.create({
-      data: {
-        pedidoId: pedidoIdResuelto,
-        total,
-        metodoPago: noCobrar ? 'Efectivo' : (metodoPago ?? 'Efectivo'),
-        noCobrar,
-        esVentaPreviaApertura,
-        usuarioId,
-        diaOperativoId: diaOperativo.id,
-      },
-    })
-
-    for (const d of detalleProductos) {
-      const ventaProducto = await tx.venta_Producto.create({
-        data: {
-          ventaId: venta.id,
-          productoId: d.productoId,
-          cantidad: d.cantidad,
-          precioCongelado: d.precioCongelado,
-          esMitadYMitad: d.esMitadYMitad,
-        },
-      })
-
-      if (d.esMitadYMitad) {
-        await tx.venta_Producto_Mitad.create({
-          data: {
-            ventaProductoId: ventaProducto.id,
-            sabor1ProductoId: d.sabor1ProductoId,
-            sabor2ProductoId: d.sabor2ProductoId,
-          },
-        })
-      }
-
-      for (const m of d.modificadores) {
-        await tx.venta_Producto_Modificador.create({
-          data: {
-            ventaProductoId: ventaProducto.id,
-            modificadorId: m.modificadorId,
-            costoAplicado: m.costoAplicado,
-          },
-        })
-      }
-    }
-
-    // 6) Movimiento_Inventario tipo Salida_venta, uno por cuenta, con la
-    //    cantidad REAL usada (negativa) y referencia a la venta.
-    for (const u of usos) {
-      await tx.movimiento_Inventario.create({
-        data: {
-          ...(u.tipo === 'ingrediente'
-            ? { ingredienteId: u.id }
-            : { productoId: u.id }),
-          tipoMovimiento: 'Salida_venta',
-          cantidad: -u.cantidad,
-          referenciaId: venta.id,
-          referenciaTipo: 'Venta',
-        },
-      })
-      if (u.tipo === 'ingrediente') {
-        await sincronizarStockIngrediente(tx, u.id)
-      }
-    }
-
-    // Si el pedido existe, dejar también la referencia de solo lectura
-    // Pedido.venta_id apuntando a esta venta.
-    if (pedidoIdResuelto) {
-      await tx.pedido.update({ where: { id: pedidoIdResuelto }, data: { ventaId: venta.id } })
-    }
-
-    const creada = await tx.venta.findUnique({
-      where: { id: venta.id },
-      include: {
-        productos: {
-          include: {
-            producto: { select: { id: true, nombre: true } },
-            mitadYMitad: true,
-            modificadores: { include: { modificador: { select: { id: true, nombre: true } } } },
-          },
-        },
-        diaOperativo: { select: { id: true, estado: true } },
-      },
-    })
-    return { venta: creada, usos }
-  })
+  )
 
   if (resultado.conflicto) {
     return res.status(STOCK_INSUFICIENTE_STATUS).json({
