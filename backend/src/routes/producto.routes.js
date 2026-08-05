@@ -1,0 +1,26 @@
+import { Router } from 'express'
+import {
+  listar,
+  obtener,
+  crear,
+  actualizar,
+  actualizarDisponibilidad,
+  desactivar,
+  eliminar,
+  asociarModificador,
+  desasociarModificador,
+} from '../controllers/producto.controller.js'
+
+const router = Router()
+
+router.get('/', listar)
+router.get('/:id', obtener)
+router.post('/', crear)
+router.patch('/:id', actualizar)
+router.patch('/:id/disponibilidad', actualizarDisponibilidad)
+router.patch('/:id/desactivar', desactivar)
+router.delete('/:id', eliminar)
+router.post('/:productoId/modificadores', asociarModificador)
+router.delete('/:productoId/modificadores/:modificadorId', desasociarModificador)
+
+export default router

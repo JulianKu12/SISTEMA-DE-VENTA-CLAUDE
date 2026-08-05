@@ -1,10 +1,13 @@
 // Prisma schema — Sistema POS para Loncherías
 // Stack: SQLite local (archivo .db dentro del backend)
 //
-// IMPORTANTE: este archivo NO define modelos todavía.
-// El esquema completo (Ingrediente, Producto, Receta, Ventas, Pedidos, Caja,
-// Usuarios, etc.) se armará en el siguiente paso a partir de los archivos
-// docs/03-modulo-productos.md a docs/07-modulo-roles.md.
+// Las entidades, campos y enums están tomados literalmente de los archivos:
+//   docs/03-modulo-productos.md
+//   docs/04-modulo-ventas-inventario.md
+//   docs/05-modulo-caja-gastos.md
+//   docs/06-modulo-pedidos-clientes.md
+//   docs/07-modulo-roles.md
+// (Ver docs/00-INDICE.md para el mapa de dependencias entre entidades.)
 
 generator client {
   provider = "prisma-client-js"
@@ -13,4 +16,435 @@ generator client {
 datasource db {
   provider = "sqlite"
   url      = env("DATABASE_URL")
+}
+
+// ---------------------------------------------------------------------------
+// Enums
+// ---------------------------------------------------------------------------
+
+enum UnidadMedida {
+  kg
+  g
+  l
+  ml
+  pieza
+}
+
+enum Estado {
+  Activo
+  Inactivo
+}
+
+enum TipoProducto {
+  Con_receta
+  Reventa_directa
+}
+
+enum TipoModificador {
+  Agregar
+  Quitar
+  Sustituir
+}
+
+enum EstadoCombo {
+  Activo
+  Inactivo
+  Suspendido
+}
+
+enum MetodoPago {
+  Efectivo
+  Tarjeta
+  Transferencia
+}
+
+enum TipoMovimientoInventario {
+  Entrada
+  Salida_venta
+  Ajuste
+  Devolucion_regreso
+  Cancelacion_regreso
+}
+
+enum MotivoAjuste {
+  Conteo_fisico
+  Merma
+  Otro
+}
+
+enum EstadoDiaOperativo {
+  Abierto
+  Cerrado
+}
+
+enum TipoReferenciaMovimiento {
+  Venta
+  Devolucion
+  Cancelacion
+}
+
+enum CategoriaGasto {
+  Insumos
+  Servicios
+  Sueldos
+  Otro
+}
+
+enum OrigenGasto {
+  Manual
+  Automatico_por_entrada_inventario
+}
+
+enum MotivoDevolucion {
+  Producto_mal_estado
+  Pedido_incorrecto
+  Cliente_insatisfecho
+  Otro
+}
+
+enum MedioDevolucion {
+  Efectivo
+  Tarjeta
+  Transferencia
+  Efectivo_de_caja
+}
+
+enum TipoPedido {
+  Para_recoger
+  A_domicilio
+}
+
+enum OrigenPedido {
+  Mostrador
+  Telefono
+}
+
+enum EstadoPreparacion {
+  Pendiente
+  En_preparacion
+  Enviado
+  Entregado
+  Cancelado
+}
+
+enum EstadoPago {
+  Pendiente_pago
+  Pagado
+}
+
+enum EstadoDisponibilidad {
+  Disponible
+  No_disponible_hoy
+  Inactivo
+}
+
+enum TipoUsuario {
+  Administrador
+  Repartidor
+}
+
+// ---------------------------------------------------------------------------
+// Módulo 03 — Ingredientes y Productos
+// ---------------------------------------------------------------------------
+
+model Ingrediente {
+  id                Int          @id @default(autoincrement())
+  nombre            String
+  unidadMedida      UnidadMedida
+  stockActual       Float
+  stockMinimoAlerta Float
+  costoUltimaCompra Float?
+  estado            Estado       @default(Activo)
+  fechaCreacion     DateTime     @default(now())
+
+  productoIngredientes    Producto_Ingrediente[]
+  modificadoresAfectados  Modificador[]           @relation("ModificadorAfectado")
+  modificadoresSustitutos Modificador[]           @relation("ModificadorSustituto")
+  movimientosInventario   Movimiento_Inventario[] @relation("MovIngrediente")
+}
+
+model Producto {
+  id                 Int          @id @default(autoincrement())
+  nombre             String
+  precio             Float
+  tipo               TipoProducto
+  permiteMitadYMitad Boolean      @default(false)
+  disponibleHoy      Boolean      @default(true)
+  estado             Estado       @default(Activo)
+  fechaCreacion      DateTime     @default(now())
+
+  productoIngredientes  Producto_Ingrediente[]
+  productoModificadores Producto_Modificador[]
+  combosProductos       Combo_Producto[]
+  ventasProductos       Venta_Producto[]
+  mitadesSabor1         Venta_Producto_Mitad[]  @relation("MitadSabor1Producto")
+  mitadesSabor2         Venta_Producto_Mitad[]  @relation("MitadSabor2Producto")
+  movimientosInventario Movimiento_Inventario[] @relation("MovProducto")
+}
+
+model Producto_Ingrediente {
+  id            Int   @id @default(autoincrement())
+  productoId    Int
+  ingredienteId Int
+  cantidad      Float
+
+  producto    Producto    @relation(fields: [productoId], references: [id])
+  ingrediente Ingrediente @relation(fields: [ingredienteId], references: [id])
+
+  @@unique([productoId, ingredienteId])
+}
+
+model Modificador {
+  id                     Int             @id @default(autoincrement())
+  nombre                 String
+  tipo                   TipoModificador
+  ingredienteAfectadoId  Int
+  ingredienteSustitutoId Int?
+  cantidadExtra          Float?
+  costoAdicional         Float           @default(0)
+  estado                 Estado          @default(Activo)
+
+  ingredienteAfectado         Ingrediente                  @relation("ModificadorAfectado", fields: [ingredienteAfectadoId], references: [id])
+  ingredienteSustituto        Ingrediente?                 @relation("ModificadorSustituto", fields: [ingredienteSustitutoId], references: [id])
+  productoModificadores       Producto_Modificador[]
+  ventasProductoModificadores Venta_Producto_Modificador[]
+}
+
+model Producto_Modificador {
+  id            Int @id @default(autoincrement())
+  productoId    Int
+  modificadorId Int
+
+  producto    Producto    @relation(fields: [productoId], references: [id])
+  modificador Modificador @relation(fields: [modificadorId], references: [id])
+
+  @@unique([productoId, modificadorId])
+}
+
+model Combo {
+  id             Int         @id @default(autoincrement())
+  nombre         String
+  precioEspecial Float
+  estado         EstadoCombo @default(Activo)
+
+  productos       Combo_Producto[]
+  ventasProductos Venta_Producto[]
+}
+
+model Combo_Producto {
+  id         Int @id @default(autoincrement())
+  comboId    Int
+  productoId Int
+  cantidad   Int @default(1)
+
+  combo    Combo    @relation(fields: [comboId], references: [id])
+  producto Producto @relation(fields: [productoId], references: [id])
+
+  @@unique([comboId, productoId])
+}
+
+// ---------------------------------------------------------------------------
+// Módulo 04 — Ventas e Inventario
+// ---------------------------------------------------------------------------
+
+model Venta {
+  id                    Int        @id @default(autoincrement())
+  fechaHora             DateTime   @default(now())
+  pedidoId              Int?       @unique
+  total                 Float
+  metodoPago            MetodoPago @default(Efectivo)
+  noCobrar              Boolean    @default(false)
+  usuarioId             Int
+  diaOperativoId        Int
+  esVentaPreviaApertura Boolean    @default(false)
+
+  pedido         Pedido?          @relation("VentaTienePedido", fields: [pedidoId], references: [id])
+  pedidoAsociado Pedido?          @relation("PedidoGeneraVenta")
+  usuario        Usuario          @relation("VentaUsuario", fields: [usuarioId], references: [id])
+  diaOperativo   Dia_Operativo    @relation(fields: [diaOperativoId], references: [id])
+  productos      Venta_Producto[]
+  devoluciones   Devolucion[]
+}
+
+model Venta_Producto {
+  id              Int     @id @default(autoincrement())
+  ventaId         Int
+  productoId      Int
+  cantidad        Int
+  precioCongelado Float
+  esMitadYMitad   Boolean @default(false)
+  comboId         Int?
+
+  venta         Venta                        @relation(fields: [ventaId], references: [id])
+  producto      Producto                     @relation(fields: [productoId], references: [id])
+  combo         Combo?                       @relation(fields: [comboId], references: [id])
+  mitadYMitad   Venta_Producto_Mitad?
+  modificadores Venta_Producto_Modificador[]
+}
+
+model Venta_Producto_Mitad {
+  id               Int @id @default(autoincrement())
+  ventaProductoId  Int @unique
+  sabor1ProductoId Int
+  sabor2ProductoId Int
+
+  ventaProducto  Venta_Producto @relation(fields: [ventaProductoId], references: [id])
+  sabor1Producto Producto       @relation("MitadSabor1Producto", fields: [sabor1ProductoId], references: [id])
+  sabor2Producto Producto       @relation("MitadSabor2Producto", fields: [sabor2ProductoId], references: [id])
+}
+
+model Venta_Producto_Modificador {
+  id              Int   @id @default(autoincrement())
+  ventaProductoId Int
+  modificadorId   Int
+  costoAplicado   Float
+
+  ventaProducto Venta_Producto @relation(fields: [ventaProductoId], references: [id])
+  modificador   Modificador    @relation(fields: [modificadorId], references: [id])
+
+  @@unique([ventaProductoId, modificadorId])
+}
+
+model Movimiento_Inventario {
+  id             Int                       @id @default(autoincrement())
+  ingredienteId  Int?
+  productoId     Int?
+  tipoMovimiento TipoMovimientoInventario
+  cantidad       Float
+  motivo         MotivoAjuste?
+  fechaHora      DateTime                  @default(now())
+  referenciaId   Int?
+  referenciaTipo TipoReferenciaMovimiento?
+
+  ingrediente Ingrediente? @relation("MovIngrediente", fields: [ingredienteId], references: [id])
+  producto    Producto?    @relation("MovProducto", fields: [productoId], references: [id])
+}
+
+// ---------------------------------------------------------------------------
+// Módulo 05 — Caja y Gastos
+// ---------------------------------------------------------------------------
+
+model Dia_Operativo {
+  id              Int                @id @default(autoincrement())
+  fechaApertura   DateTime           @default(now())
+  fechaCierre     DateTime?
+  fondoInicial    Float
+  efectivoContado Float?
+  estado          EstadoDiaOperativo @default(Abierto)
+  usuarioId       Int
+
+  usuario      Usuario      @relation(fields: [usuarioId], references: [id])
+  ventas       Venta[]
+  gastos       Gasto[]
+  devoluciones Devolucion[]
+}
+
+model Gasto {
+  id             Int            @id @default(autoincrement())
+  concepto       String
+  monto          Float
+  categoria      CategoriaGasto
+  metodoPago     MetodoPago
+  fechaHora      DateTime       @default(now())
+  diaOperativoId Int?
+  origen         OrigenGasto    @default(Manual)
+  usuarioId      Int
+
+  diaOperativo Dia_Operativo? @relation(fields: [diaOperativoId], references: [id])
+  usuario      Usuario        @relation(fields: [usuarioId], references: [id])
+}
+
+model Devolucion {
+  id                 Int              @id @default(autoincrement())
+  ventaId            Int
+  monto              Float
+  motivo             MotivoDevolucion
+  medioPagoOriginal  MetodoPago
+  medioDevolucion    MedioDevolucion
+  regresaAInventario Boolean          @default(false)
+  fechaHora          DateTime         @default(now())
+  diaOperativoId     Int
+
+  venta        Venta         @relation(fields: [ventaId], references: [id])
+  diaOperativo Dia_Operativo @relation(fields: [diaOperativoId], references: [id])
+}
+
+// ---------------------------------------------------------------------------
+// Módulo 06 — Clientes, Pedidos y Repartidores
+// ---------------------------------------------------------------------------
+
+model Cliente {
+  id            Int      @id @default(autoincrement())
+  nombre        String
+  telefono      String?
+  estado        Estado   @default(Activo)
+  fechaCreacion DateTime @default(now())
+
+  referencias Cliente_Referencia[]
+  pedidos     Pedido[]
+}
+
+model Cliente_Referencia {
+  id          Int    @id @default(autoincrement())
+  clienteId   Int
+  descripcion String
+  estado      Estado @default(Activo)
+
+  cliente Cliente  @relation(fields: [clienteId], references: [id])
+  pedidos Pedido[]
+}
+
+model Empleado {
+  id                   Int                  @id @default(autoincrement())
+  nombre               String
+  estadoDisponibilidad EstadoDisponibilidad @default(Disponible)
+  fechaCreacion        DateTime             @default(now())
+  usuarioId            Int?                 @unique
+
+  usuario Usuario? @relation("EmpleadoUsuario", fields: [usuarioId], references: [id])
+  pedidos Pedido[]
+}
+
+model Pedido {
+  id                  Int               @id @default(autoincrement())
+  tipo                TipoPedido
+  origen              OrigenPedido
+  estadoPreparacion   EstadoPreparacion @default(Pendiente)
+  estadoPago          EstadoPago        @default(Pendiente_pago)
+  clienteId           Int?
+  nombreClienteLibre  String?
+  referenciaId        Int?
+  costoEnvio          Float?
+  repartidorId        Int?
+  metodoPago          MetodoPago        @default(Efectivo)
+  montoReferenciaPago Float?
+  cambioALlevar       Float?
+  noCobrar            Boolean           @default(false)
+  total               Float
+  fechaHoraCreacion   DateTime          @default(now())
+  ventaId             Int?              @unique
+
+  cliente       Cliente?            @relation(fields: [clienteId], references: [id])
+  referencia    Cliente_Referencia? @relation(fields: [referenciaId], references: [id])
+  repartidor    Empleado?           @relation(fields: [repartidorId], references: [id])
+  venta         Venta?              @relation("PedidoGeneraVenta", fields: [ventaId], references: [id])
+  ventaAsociada Venta?              @relation("VentaTienePedido")
+}
+
+// ---------------------------------------------------------------------------
+// Módulo 07 — Roles y Usuarios
+// ---------------------------------------------------------------------------
+
+model Usuario {
+  id          Int         @id @default(autoincrement())
+  tipo        TipoUsuario
+  nombre      String?
+  usuario     String      @unique
+  contraseña String
+  tokenSesion String?
+
+  empleado      Empleado?       @relation("EmpleadoUsuario")
+  ventas        Venta[]         @relation("VentaUsuario")
+  diaOperativos Dia_Operativo[]
+  gastos        Gasto[]
 }
