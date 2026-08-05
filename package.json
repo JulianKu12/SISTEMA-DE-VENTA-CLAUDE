@@ -1,0 +1,23 @@
+{
+  "name": "sistema-de-ventas",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Sistema POS para loncherías (monorepo: frontend React + backend Express + SQLite)",
+  "workspaces": [
+    "frontend",
+    "backend"
+  ],
+  "scripts": {
+    "dev": "concurrently -n frontend,backend -c cyan,yellow \"npm run dev -w frontend\" \"npm run dev -w backend\"",
+    "dev:frontend": "npm run dev -w frontend",
+    "dev:backend": "npm run dev -w backend",
+    "build": "npm run build -w frontend",
+    "start": "npm run start -w backend",
+    "db:generate": "npm run db:generate -w backend",
+    "db:migrate": "npm run db:migrate -w backend",
+    "db:studio": "npm run db:studio -w backend"
+  },
+  "devDependencies": {
+    "concurrently": "^9.1.2"
+  }
+}

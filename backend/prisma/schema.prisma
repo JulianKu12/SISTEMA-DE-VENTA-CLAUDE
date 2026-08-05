@@ -1,0 +1,16 @@
+// Prisma schema — Sistema POS para Loncherías
+// Stack: SQLite local (archivo .db dentro del backend)
+//
+// IMPORTANTE: este archivo NO define modelos todavía.
+// El esquema completo (Ingrediente, Producto, Receta, Ventas, Pedidos, Caja,
+// Usuarios, etc.) se armará en el siguiente paso a partir de los archivos
+// docs/03-modulo-productos.md a docs/07-modulo-roles.md.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
