@@ -173,13 +173,16 @@ model Producto {
   estado             Estado       @default(Activo)
   fechaCreacion      DateTime     @default(now())
 
-  productoIngredientes  Producto_Ingrediente[]
-  productoModificadores Producto_Modificador[]
-  combosProductos       Combo_Producto[]
-  ventasProductos       Venta_Producto[]
-  mitadesSabor1         Venta_Producto_Mitad[]  @relation("MitadSabor1Producto")
-  mitadesSabor2         Venta_Producto_Mitad[]  @relation("MitadSabor2Producto")
-  movimientosInventario Movimiento_Inventario[] @relation("MovProducto")
+  productoIngredientes    Producto_Ingrediente[]
+  productoModificadores   Producto_Modificador[]
+  combosProductos         Combo_Producto[]
+  ventasProductos         Venta_Producto[]
+  mitadesSabor1           Venta_Producto_Mitad[]       @relation("MitadSabor1Producto")
+  mitadesSabor2           Venta_Producto_Mitad[]       @relation("MitadSabor2Producto")
+  movimientosInventario   Movimiento_Inventario[]      @relation("MovProducto")
+  pedidosProductos        Pedido_Producto[]
+  pedidosMitadesSabor1    Pedido_Producto_Mitad[]      @relation("PedidoMitadSabor1Producto")
+  pedidosMitadesSabor2    Pedido_Producto_Mitad[]      @relation("PedidoMitadSabor2Producto")
 }
 
 model Producto_Ingrediente {
@@ -208,6 +211,7 @@ model Modificador {
   ingredienteSustituto        Ingrediente?                 @relation("ModificadorSustituto", fields: [ingredienteSustitutoId], references: [id])
   productoModificadores       Producto_Modificador[]
   ventasProductoModificadores Venta_Producto_Modificador[]
+  pedidosProductoModificadores Pedido_Producto_Modificador[]
 }
 
 model Producto_Modificador {
@@ -229,6 +233,7 @@ model Combo {
 
   productos       Combo_Producto[]
   ventasProductos Venta_Producto[]
+  pedidosProductos Pedido_Producto[]
 }
 
 model Combo_Producto {
@@ -430,6 +435,55 @@ model Pedido {
   repartidor    Empleado?           @relation(fields: [repartidorId], references: [id])
   venta         Venta?              @relation("PedidoGeneraVenta", fields: [ventaId], references: [id])
   ventaAsociada Venta?              @relation("VentaTienePedido")
+  productos     Pedido_Producto[]
+}
+
+model Pedido_Producto {
+  id              Int     @id @default(autoincrement())
+  pedidoId        Int
+  productoId      Int
+  cantidad        Int
+  precioCongelado Float
+  esMitadYMitad   Boolean @default(false)
+  comboId         Int?
+
+  pedido      Pedido                        @relation(fields: [pedidoId], references: [id])
+  producto    Producto                      @relation(fields: [productoId], references: [id])
+  combo       Combo?                        @relation(fields: [comboId], references: [id])
+  mitadYMitad Pedido_Producto_Mitad?
+  modificadores Pedido_Producto_Modificador[]
+}
+
+model Pedido_Producto_Mitad {
+  id               Int @id @default(autoincrement())
+  pedidoProductoId Int @unique
+  sabor1ProductoId Int
+  sabor2ProductoId Int
+
+  pedidoProducto Pedido_Producto @relation(fields: [pedidoProductoId], references: [id])
+  sabor1Producto Producto        @relation("PedidoMitadSabor1Producto", fields: [sabor1ProductoId], references: [id])
+  sabor2Producto Producto        @relation("PedidoMitadSabor2Producto", fields: [sabor2ProductoId], references: [id])
+}
+
+model Pedido_Producto_Modificador {
+  id               Int   @id @default(autoincrement())
+  pedidoProductoId Int
+  modificadorId    Int
+  costoAplicado    Float
+
+  pedidoProducto Pedido_Producto @relation(fields: [pedidoProductoId], references: [id])
+  modificador    Modificador     @relation(fields: [modificadorId], references: [id])
+
+  @@unique([pedidoProductoId, modificadorId])
+}
+
+// Configuración global de un solo registro (id = 1):
+//   costo_envio      -> monto fijo de envío para pedidos A_domicilio (docs/06)
+//   repartidor_unico -> asigna automáticamente el único repartidor al Enviar
+model Configuracion {
+  id              Int     @id
+  costoEnvio      Float   @default(0)
+  repartidorUnico Boolean @default(false)
 }
 
 // ---------------------------------------------------------------------------

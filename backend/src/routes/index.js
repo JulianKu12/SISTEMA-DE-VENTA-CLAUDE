@@ -9,6 +9,10 @@ import inventarioRoutes from './inventario.routes.js'
 import cajaRoutes from './caja.routes.js'
 import gastosRoutes from './gastos.routes.js'
 import devolucionesRoutes from './devoluciones.routes.js'
+import clientesRoutes from './clientes.routes.js'
+import empleadosRoutes from './empleados.routes.js'
+import configRoutes from './config.routes.js'
+import pedidosRoutes from './pedidos.routes.js'
 
 const router = Router()
 
@@ -22,5 +26,9 @@ router.use('/inventario', inventarioRoutes)
 router.use('/caja', cajaRoutes)
 router.use('/gastos', gastosRoutes)
 router.use('/devoluciones', devolucionesRoutes)
+router.use('/clientes', clientesRoutes)
+router.use('/empleados', empleadosRoutes)
+router.use('/config', configRoutes)
+router.use('/pedidos', pedidosRoutes)
 
 export default router

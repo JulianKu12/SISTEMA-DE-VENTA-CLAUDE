@@ -47,7 +47,7 @@ function aplicarModificadores(basePorUnidad, modificadoresDetallados) {
       mapa.delete(m.ingredienteAfectadoId)
       mapa.set(m.ingredienteSustitutoId, (mapa.get(m.ingredienteSustitutoId) || 0) + (basePorUnidad.find((b) => b.ingredienteId === m.ingredienteAfectadoId)?.cantidad || 0))
     }
-    registros.push({ modificadorId: m.id, costoAplicado: m.costoAdicional })
+    registros.push({ modificadorId: m.id, costoAplicado: m.costoAplicado ?? m.costoAdicional })
   }
 
   return {
@@ -60,7 +60,9 @@ function aplicarModificadores(basePorUnidad, modificadoresDetallados) {
 // Devuelve el detalle listo para crear el Venta_Producto.
 // `opciones.ignorarEstado` permite recalcular el consumo de un producto ya
 // vendido (p. ej. devoluciones) aunque hoy esté inactivo.
-async function procesarItem(tx, item, requerimientos, opciones = {}) {
+// `item.precioCongelado` permite forzar el precio (p. ej. al generar la Venta
+// desde un Pedido cuyos precios ya quedaron congelados al capturarse).
+export async function procesarItem(tx, item, requerimientos, opciones = {}) {
   const producto = await tx.producto.findUnique({
     where: { id: Number(item.productoId) },
     include: {
@@ -77,6 +79,8 @@ async function procesarItem(tx, item, requerimientos, opciones = {}) {
   validarCantidad(cantidad)
 
   const esMitad = item.esMitadYMitad === true
+
+  const precioCongelado = item.precioCongelado ?? producto.precio
 
   // Modificadores pedidos (solo aplican a productos con receta).
   const modificadoresDetallados = []
@@ -95,6 +99,9 @@ async function procesarItem(tx, item, requerimientos, opciones = {}) {
       if (!permitidos.has(mod.id)) {
         throw new HttpError(400, `El modificador "${mod.nombre}" no está asociado al producto "${producto.nombre}"`)
       }
+      // Permite congelar el costo del modificador (p. ej. generando la Venta
+      // desde un Pedido cuyos costos quedaron fijos al capturarse).
+      if (md.costoAplicado !== undefined) mod.costoAplicado = md.costoAplicado
       modificadoresDetallados.push(mod)
     }
   }
@@ -107,7 +114,7 @@ async function procesarItem(tx, item, requerimientos, opciones = {}) {
     return {
       productoId: producto.id,
       cantidad,
-      precioCongelado: producto.precio,
+      precioCongelado,
       esMitadYMitad: false,
       modificadores: [],
     }
@@ -158,7 +165,7 @@ async function procesarItem(tx, item, requerimientos, opciones = {}) {
     return {
       productoId: producto.id,
       cantidad,
-      precioCongelado: producto.precio,
+      precioCongelado,
       esMitadYMitad: true,
       sabor1ProductoId: sabor1.id,
       sabor2ProductoId: sabor2.id,
@@ -173,7 +180,7 @@ async function procesarItem(tx, item, requerimientos, opciones = {}) {
   return {
     productoId: producto.id,
     cantidad,
-    precioCongelado: producto.precio,
+    precioCongelado,
     esMitadYMitad: false,
     modificadores: registros,
   }
@@ -201,6 +208,17 @@ export async function calcularConsumoVentaProducto(tx, ventaProducto, opciones =
   return requerimientos
 }
 
+// Calcula el subtotal de una lista de ítems ya procesados (misma fórmula que
+// `ejecutarVenta`). Se usa para recalcular el total de un Pedido al editarse.
+export function calcularTotalItems(itemsProcesados) {
+  let total = 0
+  for (const d of itemsProcesados) {
+    const subtotalModificadores = d.modificadores.reduce((acc, m) => acc + m.costoAplicado, 0)
+    total += (d.precioCongelado + subtotalModificadores) * d.cantidad
+  }
+  return total
+}
+
 // Crea una Venta reutilizando la lógica del Módulo 04. Se ejecuta dentro de la
 // transacción del llamador (`tx`), de modo que puede componerse con otras
 // operaciones (p. ej. ventas previas a apertura dentro de abrir caja — Módulo 05).
@@ -212,6 +230,7 @@ export async function ejecutarVenta(tx, {
   noCobrar = false,
   esVentaPreviaApertura = false,
   pedidoId = null,
+  costoEnvio = 0,
   usarDisponible,
   usuarioId,
   diaOperativoId,
@@ -295,7 +314,7 @@ export async function ejecutarVenta(tx, {
   const venta = await tx.venta.create({
     data: {
       pedidoId: pedidoIdResuelto,
-      total,
+      total: total + costoEnvio,
       metodoPago: noCobrar ? 'Efectivo' : (metodoPago ?? 'Efectivo'),
       noCobrar,
       esVentaPreviaApertura,

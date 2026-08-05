@@ -135,10 +135,18 @@ export const cerrarCaja = asyncHandler(async (req, res) => {
     const efectivoEsperado = dia.fondoInicial + ventasEfectivo - gastosEfectivo - devolucionesEfectivoCaja
     const diferencia = efectivoContado - efectivoEsperado
 
-    // TODO Módulo 06 (Pedidos): el aviso al cerrar caja debe reportar
-    //   - cuántos Pedido siguen en estado Pendiente_pago
-    //   - el monto informativo de pedidos Entregado con estado_pago Pendiente_pago
-    //   (repartidores aún en la calle). Hasta que exista ese módulo se devuelven vacíos.
+    // Aviso al cerrar caja (docs/05 + docs/06): pedidos aún Pendiente_pago
+    // sin resolver, y el monto informativo de pedidos Entregado que siguen
+    // Pendiente_pago (repartidores aún en la calle).
+    const [countPendientes, entregadosPendientes] = await Promise.all([
+      tx.pedido.count({
+        where: { estadoPago: 'Pendiente_pago', estadoPreparacion: { not: 'Cancelado' } },
+      }),
+      tx.pedido.aggregate({
+        _sum: { total: true },
+        where: { estadoPreparacion: 'Entregado', estadoPago: 'Pendiente_pago' },
+      }),
+    ])
 
     const cerrado = await tx.dia_Operativo.update({
       where: { id: dia.id },
@@ -154,6 +162,8 @@ export const cerrarCaja = asyncHandler(async (req, res) => {
       ventasTransferencia: aggTransferencia._sum.total ?? 0,
       gastosEfectivo,
       devolucionesEfectivoCaja,
+      pedidosPendientes: countPendientes,
+      pedidosEntregadosPendientes: entregadosPendientes._sum.total ?? 0,
     }
   })
 
@@ -172,9 +182,14 @@ export const cerrarCaja = asyncHandler(async (req, res) => {
     },
     gastosEfectivo: resultado.gastosEfectivo,
     devolucionesEfectivoCaja: resultado.devolucionesEfectivoCaja,
-    // TODO Módulo 06 (Pedidos) — ver comentario dentro de la transacción.
-    pedidosPendientesPago: [],
-    pedidosEntregadosPendientesPago: { cantidad: 0, monto: 0 },
+    // Aviso informativo: pedidos sin resolver al momento de cerrar.
+    pedidosPendientesPago: {
+      cantidad: resultado.pedidosPendientes,
+    },
+    pedidosEntregadosPendientesPago: {
+      cantidad: resultado.pedidosEntregadosPendientes > 0 ? undefined : 0,
+      monto: resultado.pedidosEntregadosPendientes,
+    },
   })
 })
 
