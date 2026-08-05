@@ -4,6 +4,7 @@ const prisma = new PrismaClient()
 const BASE = 'http://localhost:3001'
 
 let fallas = 0
+let token = null
 
 function ok(cond, nombre) {
   if (cond) console.log(`  OK  ${nombre}`)
@@ -14,9 +15,11 @@ function ok(cond, nombre) {
 }
 
 async function req(method, path, body) {
+  const headers = { ...(body !== undefined ? { 'Content-Type': 'application/json' } : {}) }
+  if (token) headers.Authorization = `Bearer ${token}`
   const res = await fetch(BASE + path, {
     method,
-    headers: body !== undefined ? { 'Content-Type': 'application/json' } : {},
+    headers,
     body: body !== undefined ? JSON.stringify(body) : undefined,
   })
   const text = await res.text()
@@ -32,6 +35,16 @@ const admin = await prisma.usuario.create({
 })
 
 try {
+  console.log('== Autenticación ==')
+  const loginRes = await fetch(BASE + '/api/auth/login', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ usuario: 'admin_test', contraseña: 'x' }),
+  })
+  const loginData = await loginRes.json()
+  token = loginData.token
+  ok(loginRes.status === 200 && !!token, 'login admin')
+
   console.log('== Health ==')
   const h = await req('GET', '/api/health')
   ok(h.status === 200 && h.data.status === 'ok', 'GET /api/health')
