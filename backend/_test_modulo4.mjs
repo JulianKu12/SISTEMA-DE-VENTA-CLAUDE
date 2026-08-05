@@ -3,6 +3,7 @@ import { PrismaClient } from '@prisma/client'
 const prisma = new PrismaClient()
 const BASE = 'http://localhost:3001'
 let fallas = 0
+let token = null
 
 function ok(cond, nombre) {
   if (cond) console.log(`  OK  ${nombre}`)
@@ -13,9 +14,11 @@ function ok(cond, nombre) {
 }
 
 async function req(method, path, body) {
+  const headers = { ...(body !== undefined ? { 'Content-Type': 'application/json' } : {}) }
+  if (token) headers.Authorization = `Bearer ${token}`
   const res = await fetch(BASE + path, {
     method,
-    headers: body !== undefined ? { 'Content-Type': 'application/json' } : {},
+    headers,
     body: body !== undefined ? JSON.stringify(body) : undefined,
   })
   const text = await res.text()
@@ -25,6 +28,17 @@ async function req(method, path, body) {
 }
 
 const admin = await prisma.usuario.create({ data: { tipo: 'Administrador', usuario: 'admin_test4', contraseña: 'x' } })
+
+async function loginAdmin() {
+  const res = await fetch(BASE + '/api/auth/login', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ usuario: 'admin_test4', contraseña: 'x' }),
+  })
+  const data = await res.json()
+  token = data.token
+  return res.status
+}
 
 // Datos base
 const harina = await prisma.ingrediente.create({
@@ -58,6 +72,9 @@ await prisma.producto_Modificador.create({ data: { productoId: torta.id, modific
 const dia = await prisma.dia_Operativo.create({ data: { fondoInicial: 0, estado: 'Abierto', usuarioId: admin.id } })
 
 try {
+  console.log('== Autenticación ==')
+  ok((await loginAdmin()) === 200, 'login admin')
+
   console.log('== Ventas ==')
   // A: 2 Torta, consume 4 de Harina (10->6)
   const v1 = await req('POST', '/api/ventas', {

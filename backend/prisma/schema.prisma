@@ -480,10 +480,12 @@ model Pedido_Producto_Modificador {
 // Configuración global de un solo registro (id = 1):
 //   costo_envio      -> monto fijo de envío para pedidos A_domicilio (docs/06)
 //   repartidor_unico -> asigna automáticamente el único repartidor al Enviar
+//   opciones_cambio  -> montos permitidos para monto_referencia_pago (docs/07)
 model Configuracion {
-  id              Int     @id
-  costoEnvio      Float   @default(0)
-  repartidorUnico Boolean @default(false)
+  id              Int      @id
+  costoEnvio      Float    @default(0)
+  repartidorUnico Boolean  @default(false)
+  opcionesCambio  Json     @default("[50, 100, 200, 500]")
 }
 
 // ---------------------------------------------------------------------------

@@ -407,7 +407,7 @@ export const crearVenta = asyncHandler(async (req, res) => {
     )
   }
 
-  const usuarioId = await resolverUsuario(prisma, req.body)
+  const usuarioId = resolverUsuario(req)
 
   const resultado = await prisma.$transaction((tx) =>
     ejecutarVenta(tx, {

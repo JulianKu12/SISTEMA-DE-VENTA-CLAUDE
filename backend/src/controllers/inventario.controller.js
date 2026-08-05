@@ -63,7 +63,7 @@ export const registrarEntrada = asyncHandler(async (req, res) => {
       if (typeof costo !== 'number' || costo < 0) {
         throw new HttpError(400, 'costo debe ser un número mayor o igual a 0')
       }
-      const usuarioId = await resolverUsuario(tx, req.body)
+      const usuarioId = resolverUsuario(req)
       gasto = await tx.gasto.create({
         data: {
           concepto: `Entrada de inventario: ${cuenta.nombre}`,

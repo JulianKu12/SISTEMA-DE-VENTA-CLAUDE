@@ -13,7 +13,7 @@ export const abrirCaja = asyncHandler(async (req, res) => {
     throw new HttpError(400, 'ventasPrevias debe ser una lista de ventas')
   }
 
-  const usuarioId = await resolverUsuario(prisma, req.body)
+  const usuarioId = resolverUsuario(req)
 
   const resultado = await prisma.$transaction(async (tx) => {
     // No puede haber 2 Dia_Operativo en estado Abierto al mismo tiempo.

@@ -3,6 +3,7 @@ import { PrismaClient } from '@prisma/client'
 const prisma = new PrismaClient()
 const BASE = 'http://localhost:3001'
 let fallas = 0
+let token = null
 
 function ok(cond, nombre) {
   if (cond) console.log(`  OK  ${nombre}`)
@@ -13,9 +14,11 @@ function ok(cond, nombre) {
 }
 
 async function req(method, path, body) {
+  const headers = { ...(body !== undefined ? { 'Content-Type': 'application/json' } : {}) }
+  if (token) headers.Authorization = `Bearer ${token}`
   const res = await fetch(BASE + path, {
     method,
-    headers: body !== undefined ? { 'Content-Type': 'application/json' } : {},
+    headers,
     body: body !== undefined ? JSON.stringify(body) : undefined,
   })
   const text = await res.text()
@@ -31,6 +34,17 @@ async function stockProducto(id) {
 
 const admin = await prisma.usuario.create({ data: { tipo: 'Administrador', usuario: 'admin_test6', contraseña: 'x' } })
 
+async function loginAdmin() {
+  const res = await fetch(BASE + '/api/auth/login', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ usuario: 'admin_test6', contraseña: 'x' }),
+  })
+  const data = await res.json()
+  token = data.token
+  return res.status
+}
+
 const harina = await prisma.ingrediente.create({
   data: { nombre: 'Harina6', unidadMedida: 'kg', stockActual: 10, stockMinimoAlerta: 2 },
 })
@@ -41,6 +55,9 @@ const coca = await prisma.producto.create({ data: { nombre: 'Coca6', precio: 15,
 await prisma.movimiento_Inventario.create({ data: { productoId: coca.id, tipoMovimiento: 'Entrada', cantidad: 10 } })
 
 try {
+  console.log('== Autenticación ==')
+  ok((await loginAdmin()) === 200, 'login admin')
+
   console.log('== Configuracion global ==')
   const cfg = await req('GET', '/api/config')
   ok(cfg.status === 200 && cfg.data.costoEnvio === 0 && cfg.data.repartidorUnico === false, 'config por defecto (costo 0, repartidor no unico)')

@@ -29,6 +29,7 @@ router.use('/devoluciones', devolucionesRoutes)
 router.use('/clientes', clientesRoutes)
 router.use('/empleados', empleadosRoutes)
 router.use('/config', configRoutes)
+router.use('/configuracion', configRoutes)
 router.use('/pedidos', pedidosRoutes)
 
 export default router

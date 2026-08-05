@@ -101,7 +101,7 @@ export const crearPedido = asyncHandler(async (req, res) => {
   }
   const montoResuelto = validarMetodoPago(tipo, noCobrar ? 'Efectivo' : metodoPago)
 
-  const usuarioId = await resolverUsuario(prisma, req.body)
+  const usuarioId = resolverUsuario(req)
 
   const resultado = await prisma.$transaction(async (tx) => {
     // Cliente: o el registrado (clienteId) o el nombre libre; ambos opcionales.
@@ -139,6 +139,15 @@ export const crearPedido = asyncHandler(async (req, res) => {
       cambioALlevar = montoReferencia - total
     } else if (montoReferenciaPago != null) {
       throw new HttpError(400, 'montoReferenciaPago solo aplica si metodoPago=Efectivo y no_cobrar=false')
+    }
+
+    // monto_referencia_pago debe estar dentro de las opciones de cambio
+    // configuradas (docs/07). Un monto no configurado -> 400 con error claro.
+    if (montoReferencia != null && !(config.opcionesCambio ?? []).includes(montoReferencia)) {
+      throw new HttpError(
+        400,
+        `montoReferenciaPago (${montoReferencia}) no está dentro de las opciones de cambio configuradas: ${(config.opcionesCambio ?? []).join(', ')}`
+      )
     }
 
     // estado_pago inicial (docs/06): Mostrador + Para_recoger cobra al capturar.
@@ -271,7 +280,7 @@ export const cambiarEstadoPago = asyncHandler(async (req, res) => {
     throw new HttpError(400, 'Solo se permite pasar estado_pago a Pagado')
   }
 
-  const usuarioId = await resolverUsuario(prisma, req.body)
+  const usuarioId = resolverUsuario(req)
 
   const resultado = await prisma.$transaction(async (tx) => {
     const pedido = await tx.pedido.findUnique({

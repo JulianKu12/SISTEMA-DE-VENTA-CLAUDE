@@ -10,8 +10,11 @@ import {
   actualizarReferencia,
   eliminarReferencia,
 } from '../controllers/clientes.controller.js'
+import { soloAdministrador } from '../middlewares/authz.middleware.js'
 
 const router = Router()
+
+router.use(soloAdministrador)
 
 router.get('/', listar)
 router.post('/', crear)

@@ -61,7 +61,7 @@ export const crear = asyncHandler(async (req, res) => {
       data: { ingredienteId: nuevo.id, tipoMovimiento: 'Entrada', cantidad: stockActual },
     })
     if (costoUltimaCompra != null) {
-      const usuarioId = await resolverUsuario(tx, req.body)
+      const usuarioId = resolverUsuario(req)
       await tx.gasto.create({
         data: {
           concepto: `Entrada de inventario: ${nuevo.nombre}`,

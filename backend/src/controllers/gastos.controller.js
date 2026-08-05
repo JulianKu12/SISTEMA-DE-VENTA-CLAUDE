@@ -19,7 +19,7 @@ export const crearGasto = asyncHandler(async (req, res) => {
     throw new HttpError(400, 'metodoPago inválido')
   }
 
-  const usuarioId = await resolverUsuario(prisma, req.body)
+  const usuarioId = resolverUsuario(req)
 
   // Se asocia al Dia_Operativo Abierto actual; si no hay ninguno, queda null y
   // se asocia al siguiente que se abra (docs/05). Esto NO bloquea la creación.

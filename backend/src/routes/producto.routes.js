@@ -10,8 +10,11 @@ import {
   asociarModificador,
   desasociarModificador,
 } from '../controllers/producto.controller.js'
+import { soloAdministrador } from '../middlewares/authz.middleware.js'
 
 const router = Router()
+
+router.use(soloAdministrador)
 
 router.get('/', listar)
 router.get('/:id', obtener)
