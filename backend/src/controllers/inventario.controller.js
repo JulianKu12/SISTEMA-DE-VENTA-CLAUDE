@@ -64,6 +64,9 @@ export const registrarEntrada = asyncHandler(async (req, res) => {
         throw new HttpError(400, 'costo debe ser un número mayor o igual a 0')
       }
       const usuarioId = resolverUsuario(req)
+      // Se asocia al Dia_Operativo Abierto actual; si no hay ninguno, queda
+      // null y se asocia al siguiente que se abra (mismo patrón que Gasto).
+      const dia = await tx.dia_Operativo.findFirst({ where: { estado: 'Abierto' } })
       gasto = await tx.gasto.create({
         data: {
           concepto: `Entrada de inventario: ${cuenta.nombre}`,
@@ -71,6 +74,7 @@ export const registrarEntrada = asyncHandler(async (req, res) => {
           categoria: 'Insumos',
           metodoPago: 'Efectivo',
           origen: 'Automatico_por_entrada_inventario',
+          diaOperativoId: dia?.id ?? null,
           usuarioId,
         },
       })

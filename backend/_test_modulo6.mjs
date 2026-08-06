@@ -226,6 +226,101 @@ try {
   const delConHistorial = await req('DELETE', `/api/clientes/${c2.data.id}`)
   ok(delConHistorial.status === 409, 'cliente con pedidos no se elimina -> 409')
 
+  console.log('== Combo en pedido: pago inmediato y pago diferido ==')
+  const combo = await prisma.combo.create({ data: { nombre: 'Combo Pedido', precioEspecial: 35 } })
+  await prisma.combo_Producto.create({ data: { comboId: combo.id, productoId: torta.id, cantidad: 1 } })
+  await prisma.combo_Producto.create({ data: { comboId: combo.id, productoId: coca.id, cantidad: 1 } })
+
+  // Mostrador + Para_recoger cobra al capturar: la Venta se genera con el
+  // precio del combo y descuenta la receta del producto + el stock reventa.
+  const pCombo = await req('POST', '/api/pedidos', {
+    tipo: 'Para_recoger',
+    origen: 'Mostrador',
+    nombreClienteLibre: 'ComboX',
+    productos: [{ comboId: combo.id, cantidad: 1 }],
+    metodoPago: 'Efectivo',
+    montoReferenciaPago: 50,
+    usuarioId: admin.id,
+  })
+  ok(pCombo.status === 201 && pCombo.data.estadoPago === 'Pagado', 'pedido con combo (Mostrador+Para_recoger) -> Pagado')
+  ok(pCombo.data.total === 35, 'pedido combo total 35 (precio del combo, no suma de productos)')
+  ok(pCombo.data.venta && pCombo.data.venta.total === 35, 'venta generada del combo total 35')
+  ok(pCombo.data.productos.length === 2, 'pedido combo expandido en 2 filas (una por producto)')
+  ok((await stockProducto(coca.id)) === 8, 'combo descuenta reventa (coca 9->8)')
+  const stockHarina6 = await prisma.movimiento_Inventario.aggregate({ _sum: { cantidad: true }, where: { ingredienteId: harina.id } })
+  ok(stockHarina6._sum.cantidad === 8, 'combo descuenta receta (harina 10->8)')
+
+  // Telefono + Para_recoger queda Pendiente_pago; al pagar se genera la Venta
+  // reconstruyendo el combo desde las filas del Pedido_Producto.
+  const pCombo2 = await req('POST', '/api/pedidos', {
+    tipo: 'Para_recoger',
+    origen: 'Telefono',
+    nombreClienteLibre: 'ComboY',
+    productos: [{ comboId: combo.id, cantidad: 1 }],
+    metodoPago: 'Efectivo',
+    montoReferenciaPago: 50,
+    usuarioId: admin.id,
+  })
+  ok(pCombo2.status === 201 && pCombo2.data.estadoPago === 'Pendiente_pago', 'pedido combo Telefono -> Pendiente_pago')
+  ok(pCombo2.data.venta === null, 'sin venta hasta pagar')
+  const pagarCombo2 = await req('PATCH', `/api/pedidos/${pCombo2.data.id}/estado-pago`, { estadoPago: 'Pagado', usuarioId: admin.id })
+  ok(pagarCombo2.status === 200 && pagarCombo2.data.venta.total === 35, 'pago diferido del combo -> venta total 35')
+  ok((await stockProducto(coca.id)) === 7, 'coca 8->7 tras pagar combo diferido')
+  const stockHarina7 = await prisma.movimiento_Inventario.aggregate({ _sum: { cantidad: true }, where: { ingredienteId: harina.id } })
+  ok(stockHarina7._sum.cantidad === 6, 'harina 8->6 tras pagar combo diferido')
+
+  console.log('== Drift de receta: cancelación revierte EXACTO (no recalcula) ==')
+  const pDrift = await req('POST', '/api/pedidos', {
+    tipo: 'Para_recoger', origen: 'Mostrador',
+    productos: [{ productoId: torta.id, cantidad: 1 }],
+    metodoPago: 'Efectivo', montoReferenciaPago: 100, usuarioId: admin.id,
+  })
+  ok(pDrift.status === 201 && pDrift.data.estadoPago === 'Pagado', 'pedido torta pagado al capturar')
+  const stockHarina8 = await prisma.movimiento_Inventario.aggregate({ _sum: { cantidad: true }, where: { ingredienteId: harina.id } })
+  ok(stockHarina8._sum.cantidad === 4, 'torta consume 2 harina (6->4)')
+  // La receta cambia DESPUÉS de la venta: hoy pediría 5 harina por unidad.
+  await prisma.producto_Ingrediente.update({
+    where: { productoId_ingredienteId: { productoId: torta.id, ingredienteId: harina.id } },
+    data: { cantidad: 5 },
+  })
+  const cancelDrift = await req('PATCH', `/api/pedidos/${pDrift.data.id}/estado-preparacion`, {
+    estadoPreparacion: 'Cancelado',
+    regresaAInventario: true,
+  })
+  ok(cancelDrift.status === 200 && cancelDrift.data.movimientosCancelacionRegreso === 1, 'cancelacion revierte los movimientos exactos')
+  const stockHarina9 = await prisma.movimiento_Inventario.aggregate({ _sum: { cantidad: true }, where: { ingredienteId: harina.id } })
+  ok(stockHarina9._sum.cantidad === 6, 'se revierte EXACTO (2, no la receta nueva de 5) -> harina 6')
+
+  console.log('== usar_disponible: cancelar pedido revierte EXACTO el parcial ==')
+  const capH2 = await prisma.ingrediente.create({ data: { nombre: 'CapH2', unidadMedida: 'kg', stockActual: 5, stockMinimoAlerta: 0 } })
+  await prisma.movimiento_Inventario.create({ data: { ingredienteId: capH2.id, tipoMovimiento: 'Entrada', cantidad: 5 } })
+  const capTorta2 = await prisma.producto.create({ data: { nombre: 'CapTorta2', precio: 20, tipo: 'Con_receta' } })
+  await prisma.producto_Ingrediente.create({ data: { productoId: capTorta2.id, ingredienteId: capH2.id, cantidad: 2 } })
+
+  // Mostrador + Para_recoger paga al capturar; 3 tortas requieren 6 y hay 5:
+  // "usar disponible" descuenta solo 5.
+  const pCap = await req('POST', '/api/pedidos', {
+    tipo: 'Para_recoger', origen: 'Mostrador',
+    nombreClienteLibre: 'CapPedido',
+    productos: [{ productoId: capTorta2.id, cantidad: 3 }],
+    metodoPago: 'Efectivo', montoReferenciaPago: 100,
+    usarDisponible: [{ tipo: 'ingrediente', id: capH2.id }],
+    usuarioId: admin.id,
+  })
+  ok(pCap.status === 201 && pCap.data.estadoPago === 'Pagado' && pCap.data.venta.total === 60, 'pedido con usar_disponible pagado al capturar (total 60)')
+  const stockCap2_0 = await prisma.movimiento_Inventario.aggregate({ _sum: { cantidad: true }, where: { ingredienteId: capH2.id } })
+  ok(stockCap2_0._sum.cantidad === 0, 'descuenta el parcial (5 de 6 requeridos) -> capH2 0')
+  const mvCapPedido = await prisma.movimiento_Inventario.findFirst({ where: { tipoMovimiento: 'Salida_venta', ingredienteId: capH2.id } })
+  ok(mvCapPedido && mvCapPedido.ventaProductoId != null && mvCapPedido.pedidoProductoId != null, 'Salida_venta del parcial vinculada a ventaProductoId y pedidoProductoId')
+
+  const cancelCap = await req('PATCH', `/api/pedidos/${pCap.data.id}/estado-preparacion`, {
+    estadoPreparacion: 'Cancelado',
+    regresaAInventario: true,
+  })
+  ok(cancelCap.status === 200 && cancelCap.data.movimientosCancelacionRegreso === 1, 'cancelación revierte el movimiento del parcial')
+  const stockCap2_1 = await prisma.movimiento_Inventario.aggregate({ _sum: { cantidad: true }, where: { ingredienteId: capH2.id } })
+  ok(stockCap2_1._sum.cantidad === 5, 'revierte EXACTO el parcial (5, no 6 de la receta ni 0) -> capH2 5')
+
   console.log(`\nResultado: ${fallas === 0 ? 'TODAS LAS PRUEBAS PASARON' : fallas + ' prueba(s) fallaron'}`)
 } catch (e) {
   console.error('ERROR EN PRUEBA:', e)
@@ -241,6 +336,8 @@ try {
     await tx.pedido.deleteMany()
     await tx.venta.deleteMany()
     await tx.movimiento_Inventario.deleteMany()
+    await tx.combo_Producto.deleteMany()
+    await tx.combo.deleteMany()
     await tx.empleado.deleteMany()
     await tx.cliente_Referencia.deleteMany()
     await tx.cliente.deleteMany()

@@ -145,6 +145,133 @@ try {
   const badCoca = await req('POST', '/api/ventas', { productos: [{ productoId: coca.id, cantidad: 100 }], metodoPago: 'Efectivo', usuarioId: admin.id })
   ok(badCoca.status === 409 && badCoca.data.stockInsuficiente[0].tipo === 'producto', 'reventa stock insuficiente -> 409')
 
+  console.log('== Venta de combos ==')
+  const combo = await prisma.combo.create({ data: { nombre: 'Combo Clasico', precioEspecial: 30 } })
+  await prisma.combo_Producto.create({ data: { comboId: combo.id, productoId: torta.id, cantidad: 1 } })
+  await prisma.combo_Producto.create({ data: { comboId: combo.id, productoId: coca.id, cantidad: 1 } })
+
+  // Stock actual antes: harina 5, masa 97, coca 8.
+  const vCombo = await req('POST', '/api/ventas', {
+    productos: [{ comboId: combo.id, cantidad: 1 }],
+    metodoPago: 'Efectivo',
+    usuarioId: admin.id,
+  })
+  ok(vCombo.status === 201 && vCombo.data.venta.total === 30, 'venta combo total 30 (precio especial)')
+  ok(vCombo.data.venta.productos.length === 2, 'combo genera 1 fila por producto incluido')
+  ok(vCombo.data.venta.productos.every((vp) => vp.combo?.id === combo.id), 'filas del combo con comboId')
+  const stockCocaCombo = await prisma.movimiento_Inventario.aggregate({ _sum: { cantidad: true }, where: { productoId: coca.id } })
+  ok(stockCocaCombo._sum.cantidad === 7, 'combo descuenta el producto reventa (coca 8->7)')
+  const stockHarinaCombo = await prisma.movimiento_Inventario.aggregate({ _sum: { cantidad: true }, where: { ingredienteId: harina.id } })
+  ok(stockHarinaCombo._sum.cantidad === 3, 'combo descuenta la receta del producto con receta (harina 5->3)')
+
+  // Combo con stock insuficiente -> 409 con opciones de precio.
+  const comboMixto = await prisma.combo.create({ data: { nombre: 'Combo Mixto', precioEspecial: 100 } })
+  await prisma.combo_Producto.create({ data: { comboId: comboMixto.id, productoId: torta.id, cantidad: 1 } })
+  await prisma.combo_Producto.create({ data: { comboId: comboMixto.id, productoId: coca.id, cantidad: 10 } })
+  const vComboMix = await req('POST', '/api/ventas', {
+    productos: [{ comboId: comboMixto.id, cantidad: 1 }],
+    metodoPago: 'Efectivo',
+    usuarioId: admin.id,
+  })
+  ok(vComboMix.status === 409, 'combo con stock insuficiente bloquea la venta -> 409')
+  ok(
+    vComboMix.data.opcionesPrecio && vComboMix.data.opcionesPrecio[0].precioReal === 25 &&
+      vComboMix.data.opcionesPrecio[0].precioEspecial === 100,
+    'opcionesPrecio: precio real (productos disponibles) y precio especial'
+  )
+
+  // "Otro precio" manual: precioCongelado en el ítem del combo.
+  const vComboOtro = await req('POST', '/api/ventas', {
+    productos: [{ comboId: combo.id, cantidad: 1, precioCongelado: 45 }],
+    metodoPago: 'Efectivo',
+    usuarioId: admin.id,
+  })
+  ok(vComboOtro.status === 201 && vComboOtro.data.venta.total === 45, 'combo con "otro precio" manual (45)')
+
+  // Forzar venta de combo con usar_disponible (descuenta solo lo disponible).
+  const comboBig = await prisma.combo.create({ data: { nombre: 'Combo Grande', precioEspecial: 100 } })
+  await prisma.combo_Producto.create({ data: { comboId: comboBig.id, productoId: coca.id, cantidad: 10 } })
+  const vComboForce = await req('POST', '/api/ventas', {
+    productos: [{ comboId: comboBig.id, cantidad: 1 }],
+    usarDisponible: [{ tipo: 'producto', id: coca.id }],
+    metodoPago: 'Efectivo',
+    usuarioId: admin.id,
+  })
+  ok(vComboForce.status === 201 && vComboForce.data.venta.total === 100, 'combo forzado con usarDisponible -> 201')
+  const stockCocaForce = await prisma.movimiento_Inventario.aggregate({ _sum: { cantidad: true }, where: { productoId: coca.id } })
+  ok(stockCocaForce._sum.cantidad === 0, 'coca queda en 0 tras forzar combo (no negativo)')
+
+  console.log('== disponible_hoy bloqueado ==')
+  const noDisp = await prisma.producto.create({
+    data: { nombre: 'NoHoy', precio: 5, tipo: 'Reventa_directa', disponibleHoy: false },
+  })
+  const vNoDisp = await req('POST', '/api/ventas', {
+    productos: [{ productoId: noDisp.id, cantidad: 1 }],
+    metodoPago: 'Efectivo',
+    usuarioId: admin.id,
+  })
+  ok(vNoDisp.status === 400, 'venta de producto no disponible hoy -> 400')
+  const comboNoDisp = await prisma.combo.create({ data: { nombre: 'Combo NoHoy', precioEspecial: 3 } })
+  await prisma.combo_Producto.create({ data: { comboId: comboNoDisp.id, productoId: noDisp.id, cantidad: 1 } })
+  const vComboNoDisp = await req('POST', '/api/ventas', {
+    productos: [{ comboId: comboNoDisp.id, cantidad: 1 }],
+    metodoPago: 'Efectivo',
+    usuarioId: admin.id,
+  })
+  ok(vComboNoDisp.status === 400, 'combo con producto no disponible hoy -> 400')
+
+  console.log('== usar_disponible: devolución parcial revierte EXACTO el parcial ==')
+  const capHarina = await prisma.ingrediente.create({ data: { nombre: 'CapHarina', unidadMedida: 'kg', stockActual: 7, stockMinimoAlerta: 0 } })
+  await prisma.movimiento_Inventario.create({ data: { ingredienteId: capHarina.id, tipoMovimiento: 'Entrada', cantidad: 7 } })
+  const capTorta = await prisma.producto.create({ data: { nombre: 'CapTorta', precio: 10, tipo: 'Con_receta' } })
+  await prisma.producto_Ingrediente.create({ data: { productoId: capTorta.id, ingredienteId: capHarina.id, cantidad: 2 } })
+
+  // 3 unidades (requieren 6) + 2 unidades (requieren 4) = 10 requeridas; hay 7.
+  // "usar disponible" descuenta solo 7, repartido entre las 2 filas (4 y 3).
+  const vCap = await req('POST', '/api/ventas', {
+    productos: [
+      { productoId: capTorta.id, cantidad: 3 },
+      { productoId: capTorta.id, cantidad: 2 },
+    ],
+    usarDisponible: [capHarina.id],
+    metodoPago: 'Efectivo',
+    usuarioId: admin.id,
+  })
+  ok(vCap.status === 201 && vCap.data.venta.total === 50, 'venta con usar_disponible -> 201 total 50')
+  const stockCap0 = await prisma.movimiento_Inventario.aggregate({ _sum: { cantidad: true }, where: { ingredienteId: capHarina.id } })
+  ok(stockCap0._sum.cantidad === 0, 'capHarina queda en 0 tras el descuento parcial (10 requeridos, 7 disponibles)')
+  const vpCap1 = vCap.data.venta.productos[0]
+  const vpCap2 = vCap.data.venta.productos[1]
+  const mvCap1 = await prisma.movimiento_Inventario.findFirst({ where: { ventaProductoId: vpCap1.id, tipoMovimiento: 'Salida_venta' } })
+  const mvCap2 = await prisma.movimiento_Inventario.findFirst({ where: { ventaProductoId: vpCap2.id, tipoMovimiento: 'Salida_venta' } })
+  ok(mvCap1 && mvCap1.cantidad === -4, 'fila de 3 unidades descuenta su fracción (4) vinculada a su ventaProductoId')
+  ok(mvCap2 && mvCap2.cantidad === -3, 'fila de 2 unidades descuenta su fracción (3) vinculada a su ventaProductoId')
+
+  // Devolución parcial de la fila de 2 unidades: regresa EXACTO su fracción
+  // (3) — ni el consumo completo de la receta (4) ni cero.
+  const devCap = await req('POST', '/api/devoluciones', {
+    ventaId: vCap.data.venta.id,
+    ventaProductoIds: [vpCap2.id],
+    monto: 20,
+    motivo: 'Otro',
+    medioDevolucion: 'Efectivo',
+    regresaAInventario: true,
+  })
+  ok(devCap.status === 201 && devCap.data.movimientosRegreso === 1, 'devolución parcial revierte 1 movimiento (el del parcial)')
+  const stockCap1 = await prisma.movimiento_Inventario.aggregate({ _sum: { cantidad: true }, where: { ingredienteId: capHarina.id } })
+  ok(stockCap1._sum.cantidad === 3, 'revierte EXACTO el parcial (3, no 4 de la receta ni 0) -> capHarina 3')
+
+  console.log('== es_venta_previa_apertura ignorada desde el body ==')
+  const productoPrev = await prisma.producto.create({ data: { nombre: 'Prev', precio: 4, tipo: 'Reventa_directa' } })
+  await prisma.movimiento_Inventario.create({ data: { productoId: productoPrev.id, tipoMovimiento: 'Entrada', cantidad: 5 } })
+  const vPrev = await req('POST', '/api/ventas', {
+    productos: [{ productoId: productoPrev.id, cantidad: 1 }],
+    metodoPago: 'Efectivo',
+    esVentaPreviaApertura: true,
+    usuarioId: admin.id,
+  })
+  ok(vPrev.status === 201 && vPrev.data.venta.esVentaPreviaApertura === false, 'body esVentaPreviaApertura=true es ignorado (queda false)')
+
   // J = sin caja abierta
   await prisma.dia_Operativo.update({ where: { id: dia.id }, data: { estado: 'Cerrado' } })
   const sinCaja = await req('POST', '/api/ventas', { productos: [{ productoId: coca.id, cantidad: 1 }], metodoPago: 'Efectivo', usuarioId: admin.id })
@@ -156,11 +283,14 @@ try {
   fallas++
 } finally {
   await prisma.$transaction(async (tx) => {
+    await tx.devolucion.deleteMany()
     await tx.venta_Producto_Modificador.deleteMany()
     await tx.venta_Producto_Mitad.deleteMany()
     await tx.venta_Producto.deleteMany()
     await tx.venta.deleteMany()
     await tx.movimiento_Inventario.deleteMany()
+    await tx.combo_Producto.deleteMany()
+    await tx.combo.deleteMany()
     await tx.producto_Modificador.deleteMany()
     await tx.modificador.deleteMany()
     await tx.producto_Ingrediente.deleteMany()

@@ -23,6 +23,27 @@ function acumular(requerimientos, tipo, id, cantidad) {
   requerimientos.set(key, (requerimientos.get(key) || 0) + cantidad)
 }
 
+// Suma los consumos de una lista de cuentas al acumulador global.
+function agregarConsumos(requerimientos, consumos) {
+  for (const c of consumos) {
+    acumular(requerimientos, c.tipo, c.id, c.cantidad)
+  }
+}
+
+// Une los consumos repetidos de la MISMA cuenta en una sola fila (p. ej. mitad y
+// mitad con dos sabores del mismo ingrediente, o un modificador que repite un
+// ingrediente). Así cada (fila, cuenta) aparece una sola vez y la distribución
+// de "usar disponible" y los Movimiento_Inventario quedan 1:1 por cuenta.
+function agruparConsumos(consumos) {
+  const mapa = new Map()
+  for (const c of consumos) {
+    const clave = `${c.tipo}:${c.id}`
+    const previo = mapa.get(clave)
+    mapa.set(clave, { tipo: c.tipo, id: c.id, cantidad: (previo?.cantidad ?? 0) + c.cantidad })
+  }
+  return [...mapa.values()]
+}
+
 // Aplica los modificadores sobre la receta base por unidad.
 //  - Agregar   : suma `cantidadExtra` al ingrediente afectado.
 //  - Quitar    : elimina el ingrediente afectado.
@@ -56,13 +77,91 @@ function aplicarModificadores(basePorUnidad, modificadoresDetallados) {
   }
 }
 
-// Procesa UN ítem de la venta y acumula sus requerimientos de inventario.
-// Devuelve el detalle listo para crear el Venta_Producto.
-// `opciones.ignorarEstado` permite recalcular el consumo de un producto ya
-// vendido (p. ej. devoluciones) aunque hoy esté inactivo.
+// Expande un ítem de COMBO (docs/03): descuenta inventario según la receta de
+// cada Producto incluido (Combo_Producto), cobra el precio del combo (precio
+// especial o "otro precio" manual) y devuelve una fila por producto para
+// Venta_Producto/Pedido_Producto con su comboId.
+async function procesarCombo(tx, item, opciones = {}) {
+  const combo = await tx.combo.findUnique({
+    where: { id: Number(item.comboId) },
+    include: { productos: { include: { producto: { include: { productoIngredientes: true } } } } },
+  })
+  if (!combo) throw new HttpError(404, `El combo ${item.comboId} no existe`)
+  if (combo.estado !== 'Activo') {
+    throw new HttpError(400, `El combo "${combo.nombre}" está ${combo.estado}. No se puede vender.`)
+  }
+  if (!combo.productos.length) {
+    throw new HttpError(400, `El combo "${combo.nombre}" no tiene productos asociados`)
+  }
+  if (Array.isArray(item.modificadores) && item.modificadores.length > 0) {
+    throw new HttpError(400, 'Los combos no admiten modificadores (precio cerrado)')
+  }
+
+  const cantidad = Number(item.cantidad)
+  validarCantidad(cantidad)
+
+  // Precio por unidad del combo: "otro precio" manual (precioCongelado) o el
+  // precio_especial del combo (docs/03).
+  const comboPrecioCongelado = item.precioCongelado ?? combo.precioEspecial
+
+  // Mapa para vincular los Pedido_Producto ya creados al generar la Venta
+  // desde un Pedido (pedidoProductos: [{productoId, pedidoProductoId}]).
+  const vinculos = new Map()
+  if (Array.isArray(item.pedidoProductos)) {
+    for (const v of item.pedidoProductos) vinculos.set(Number(v.productoId), v.pedidoProductoId)
+  }
+
+  const detalleProductos = []
+  let precioReal = 0
+  for (const cp of combo.productos) {
+    const p = cp.producto
+    if (!opciones.ignorarEstado && p.estado === 'Inactivo') {
+      throw new HttpError(400, `El producto "${p.nombre}" del combo está inactivo`)
+    }
+    if (!opciones.ignorarEstado && !p.disponibleHoy) {
+      throw new HttpError(400, `El producto "${p.nombre}" del combo no está disponible hoy`)
+    }
+    const filaCantidad = cantidad * cp.cantidad
+    const consumos = []
+    if (p.tipo === 'Reventa_directa') {
+      consumos.push({ tipo: 'producto', id: p.id, cantidad: filaCantidad })
+    } else {
+      for (const pi of p.productoIngredientes) {
+        consumos.push({ tipo: 'ingrediente', id: pi.ingredienteId, cantidad: pi.cantidad * filaCantidad })
+      }
+    }
+    // "Precio real" = suma de precios normales de los productos del combo
+    // (docs/03), usado para ofrecer vender por separado si falta stock.
+    precioReal += p.precio * cp.cantidad
+    detalleProductos.push({
+      productoId: p.id,
+      cantidad: filaCantidad,
+      precioCongelado: p.precio,
+      consumos,
+      pedidoProductoId: vinculos.get(p.id) ?? null,
+    })
+  }
+
+  return {
+    tipo: 'combo',
+    comboId: combo.id,
+    cantidad,
+    comboPrecioCongelado,
+    precioReal,
+    detalleProductos,
+  }
+}
+
+// Procesa UN ítem de la venta/pedido (producto normal o combo) y devuelve su
+// consumo de inventario por cuenta. `opciones.ignorarEstado` permite recalcular
+// (p. ej. devoluciones) aunque hoy esté inactivo o no disponible.
 // `item.precioCongelado` permite forzar el precio (p. ej. al generar la Venta
 // desde un Pedido cuyos precios ya quedaron congelados al capturarse).
-export async function procesarItem(tx, item, requerimientos, opciones = {}) {
+export async function procesarItem(tx, item, opciones = {}) {
+  if (item.comboId != null) {
+    return procesarCombo(tx, item, opciones)
+  }
+
   const producto = await tx.producto.findUnique({
     where: { id: Number(item.productoId) },
     include: {
@@ -73,6 +172,9 @@ export async function procesarItem(tx, item, requerimientos, opciones = {}) {
   if (!producto) throw new HttpError(404, `El producto ${item.productoId} no existe`)
   if (!opciones.ignorarEstado && producto.estado === 'Inactivo') {
     throw new HttpError(400, `El producto "${producto.nombre}" está inactivo`)
+  }
+  if (!opciones.ignorarEstado && !producto.disponibleHoy) {
+    throw new HttpError(400, `El producto "${producto.nombre}" no está disponible hoy`)
   }
 
   const cantidad = Number(item.cantidad)
@@ -106,17 +208,24 @@ export async function procesarItem(tx, item, requerimientos, opciones = {}) {
     }
   }
 
+  const consumos = []
+
   if (producto.tipo === 'Reventa_directa') {
     if (esMitad) {
       throw new HttpError(400, `El producto "${producto.nombre}" es de reventa directa y no admite mitad y mitad`)
     }
-    acumular(requerimientos, 'producto', producto.id, cantidad)
+    consumos.push({ tipo: 'producto', id: producto.id, cantidad })
     return {
-      productoId: producto.id,
-      cantidad,
-      precioCongelado,
-      esMitadYMitad: false,
-      modificadores: [],
+      tipo: 'producto',
+      detalle: {
+        productoId: producto.id,
+        cantidad,
+        precioCongelado,
+        esMitadYMitad: false,
+        modificadores: [],
+        pedidoProductoId: item.pedidoProductoId ?? null,
+      },
+      consumos,
     }
   }
 
@@ -138,10 +247,6 @@ export async function procesarItem(tx, item, requerimientos, opciones = {}) {
       throw new HttpError(400, `El producto mitad y mitad "${producto.nombre}" requiere sabor1ProductoId y sabor2ProductoId`)
     }
 
-    // La receta se divide al 50% con REDONDEO HACIA ARRIBA (docs/03 y docs/04).
-    const dividirMitad = (ingredientes) =>
-      ingredientes.map((x) => ({ ingredienteId: x.ingredienteId, cantidad: Math.ceil(x.cantidad / 2) }))
-
     const sabor1 = await tx.producto.findUnique({ where: { id: sabor1Id }, include: { productoIngredientes: true } })
     const sabor2 = await tx.producto.findUnique({ where: { id: sabor2Id }, include: { productoIngredientes: true } })
     if (!sabor1) throw new HttpError(404, `El sabor 1 (producto ${sabor1Id}) no existe`)
@@ -149,6 +254,20 @@ export async function procesarItem(tx, item, requerimientos, opciones = {}) {
     if (sabor1.tipo !== 'Con_receta' || sabor2.tipo !== 'Con_receta') {
       throw new HttpError(400, 'Los sabores de un producto mitad y mitad deben tener receta')
     }
+    if (!opciones.ignorarEstado) {
+      for (const s of [sabor1, sabor2]) {
+        if (s.estado === 'Inactivo') {
+          throw new HttpError(400, `El sabor "${s.nombre}" está inactivo`)
+        }
+        if (!s.disponibleHoy) {
+          throw new HttpError(400, `El sabor "${s.nombre}" no está disponible hoy`)
+        }
+      }
+    }
+
+    // La receta se divide al 50% con REDONDEO HACIA ARRIBA (docs/03 y docs/04).
+    const dividirMitad = (ingredientes) =>
+      ingredientes.map((x) => ({ ingredienteId: x.ingredienteId, cantidad: Math.ceil(x.cantidad / 2) }))
 
     // El producto base NO consume inventario propio en mitad y mitad: su rol es
     // solo representar precio/tamaño vendido. Solo se descuenta la mitad de la
@@ -159,62 +278,54 @@ export async function procesarItem(tx, item, requerimientos, opciones = {}) {
     ]
 
     for (const x of porUnidad) {
-      acumular(requerimientos, 'ingrediente', x.ingredienteId, x.cantidad * cantidad)
+      consumos.push({ tipo: 'ingrediente', id: x.ingredienteId, cantidad: x.cantidad * cantidad })
     }
 
     return {
-      productoId: producto.id,
-      cantidad,
-      precioCongelado,
-      esMitadYMitad: true,
-      sabor1ProductoId: sabor1.id,
-      sabor2ProductoId: sabor2.id,
-      modificadores: registros,
+      tipo: 'producto',
+      detalle: {
+        productoId: producto.id,
+        cantidad,
+        precioCongelado,
+        esMitadYMitad: true,
+        sabor1ProductoId: sabor1.id,
+        sabor2ProductoId: sabor2.id,
+        modificadores: registros,
+        pedidoProductoId: item.pedidoProductoId ?? null,
+      },
+      consumos,
     }
   }
 
   for (const x of base) {
-    acumular(requerimientos, 'ingrediente', x.ingredienteId, x.cantidad * cantidad)
+    consumos.push({ tipo: 'ingrediente', id: x.ingredienteId, cantidad: x.cantidad * cantidad })
   }
 
   return {
-    productoId: producto.id,
-    cantidad,
-    precioCongelado,
-    esMitadYMitad: false,
-    modificadores: registros,
+    tipo: 'producto',
+    detalle: {
+      productoId: producto.id,
+      cantidad,
+      precioCongelado,
+      esMitadYMitad: false,
+      modificadores: registros,
+      pedidoProductoId: item.pedidoProductoId ?? null,
+    },
+    consumos,
   }
-}
-
-// Recalcula el consumo de inventario de un Venta_Producto ya guardado (usado
-// por devoluciones parciales para saber QUÉ ingredientes regresar). Reutiliza
-// la misma lógica de procesarItem (modificadores, mitad y mitad, reventa).
-// Devuelve un Map `'ingrediente:id'|'producto:id' -> cantidad`.
-export async function calcularConsumoVentaProducto(tx, ventaProducto, opciones = {}) {
-  const requerimientos = new Map()
-  const item = {
-    productoId: ventaProducto.productoId,
-    cantidad: ventaProducto.cantidad,
-    esMitadYMitad: ventaProducto.esMitadYMitad,
-  }
-  if (ventaProducto.esMitadYMitad && ventaProducto.mitadYMitad) {
-    item.sabor1ProductoId = ventaProducto.mitadYMitad.sabor1ProductoId
-    item.sabor2ProductoId = ventaProducto.mitadYMitad.sabor2ProductoId
-  }
-  if (Array.isArray(ventaProducto.modificadores) && ventaProducto.modificadores.length > 0) {
-    item.modificadores = ventaProducto.modificadores.map((m) => ({ modificadorId: m.modificadorId }))
-  }
-  await procesarItem(tx, item, requerimientos, opciones)
-  return requerimientos
 }
 
 // Calcula el subtotal de una lista de ítems ya procesados (misma fórmula que
-// `ejecutarVenta`). Se usa para recalcular el total de un Pedido al editarse.
+// `ejecutarVenta`). Se usa para calcular el total de un Pedido al crearse.
 export function calcularTotalItems(itemsProcesados) {
   let total = 0
-  for (const d of itemsProcesados) {
-    const subtotalModificadores = d.modificadores.reduce((acc, m) => acc + m.costoAplicado, 0)
-    total += (d.precioCongelado + subtotalModificadores) * d.cantidad
+  for (const it of itemsProcesados) {
+    if (it.tipo === 'combo') {
+      total += it.comboPrecioCongelado * it.cantidad
+    } else {
+      const subtotalModificadores = it.detalle.modificadores.reduce((acc, m) => acc + m.costoAplicado, 0)
+      total += (it.detalle.precioCongelado + subtotalModificadores) * it.detalle.cantidad
+    }
   }
   return total
 }
@@ -222,8 +333,10 @@ export function calcularTotalItems(itemsProcesados) {
 // Crea una Venta reutilizando la lógica del Módulo 04. Se ejecuta dentro de la
 // transacción del llamador (`tx`), de modo que puede componerse con otras
 // operaciones (p. ej. ventas previas a apertura dentro de abrir caja — Módulo 05).
-// Devuelve { conflicto, faltantes, mensaje } si falta stock sin confirmar, o
-// { venta, usos } si se registró correctamente.
+// Acepta ítems "crudos" (productoId/comboId) o ya procesados por `procesarItem`
+// (p. ej. al cobrar un Pedido cuyos precios ya quedaron congelados).
+// Devuelve { conflicto, faltantes, mensaje, opcionesPrecio } si falta stock sin
+// confirmar, o { venta, usos } si se registró correctamente.
 export async function ejecutarVenta(tx, {
   productos,
   metodoPago,
@@ -257,8 +370,13 @@ export async function ejecutarVenta(tx, {
   const requerimientos = new Map()
   const itemsProcesados = []
   for (const item of productos) {
-    const detalle = await procesarItem(tx, item, requerimientos)
-    itemsProcesados.push(detalle)
+    const procesado = item?.tipo ? item : await procesarItem(tx, item)
+    itemsProcesados.push(procesado)
+    if (procesado.tipo === 'combo') {
+      for (const dp of procesado.detalleProductos) agregarConsumos(requerimientos, dp.consumos)
+    } else {
+      agregarConsumos(requerimientos, procesado.consumos)
+    }
   }
 
   // 2) Validar stock contra la suma de movimientos de cada cuenta.
@@ -279,17 +397,41 @@ export async function ejecutarVenta(tx, {
     (f) => !confirmarTodo && !confirmados.has(`${f.tipo}:${f.id}`)
   )
   if (sinConfirmar.length > 0) {
-    return {
+    const respuesta = {
       conflicto: true,
       faltantes,
       mensaje:
         'Stock insuficiente. Confirma qué ingredientes se usarán con la cantidad disponible para continuar (usarDisponible).',
     }
+
+    // Para combos se ofrece además el "precio real" (suma de precios normales
+    // de los productos del combo) y el precio especial, para vender por
+    // separado lo disponible (docs/03).
+    const combos = itemsProcesados.filter((it) => it.tipo === 'combo')
+    if (combos.length > 0) {
+      const cuentasOk = new Set()
+      for (const [key, requerido] of requerimientos) {
+        if ((stocks.get(key) ?? 0) >= requerido) cuentasOk.add(key)
+      }
+      respuesta.opcionesPrecio = combos.map((c) => {
+        const disponibles = c.detalleProductos.filter((dp) =>
+          dp.consumos.every((cc) => cuentasOk.has(`${cc.tipo}:${cc.id}`))
+        )
+        return {
+          comboId: c.comboId,
+          cantidad: c.cantidad,
+          precioReal: disponibles.reduce((a, dp) => a + dp.precioCongelado, 0),
+          precioEspecial: c.comboPrecioCongelado,
+        }
+      })
+    }
+    return respuesta
   }
 
   // 4) Calcular la cantidad REAL a descontar: para los confirmados con stock
   //    insuficiente se descuenta solo lo disponible (queda en 0, no negativo).
   const usos = []
+  const cuentasTope = new Map()
   for (const [key, requerido] of requerimientos) {
     const [tipo, id] = key.split(':')
     const disponible = stocks.get(key)
@@ -297,6 +439,7 @@ export async function ejecutarVenta(tx, {
       usos.push({ tipo, id: Number(id), cantidad: requerido })
     } else if (confirmarTodo || confirmados.has(key)) {
       usos.push({ tipo, id: Number(id), cantidad: disponible })
+      cuentasTope.set(key, { tipo, id: Number(id), cantidad: disponible })
     } else {
       // No debería llegar: sinConfirmar habría frenado antes.
       usos.push({ tipo, id: Number(id), cantidad: requerido })
@@ -305,11 +448,49 @@ export async function ejecutarVenta(tx, {
 
   // 5) Crear la Venta y sus detalles dentro de la misma transacción.
   let total = 0
-  const detalleProductos = itemsProcesados.map((d) => {
-    const subtotalModificadores = d.modificadores.reduce((acc, m) => acc + m.costoAplicado, 0)
-    total += (d.precioCongelado + subtotalModificadores) * d.cantidad
-    return d
-  })
+  const ventaRows = []
+  for (const it of itemsProcesados) {
+    if (it.tipo === 'combo') {
+      total += it.comboPrecioCongelado * it.cantidad
+      for (const dp of it.detalleProductos) {
+        ventaRows.push({
+          data: {
+            productoId: dp.productoId,
+            cantidad: dp.cantidad,
+            precioCongelado: dp.precioCongelado,
+            esMitadYMitad: false,
+          },
+          comboId: it.comboId,
+          comboPrecioCongelado: it.comboPrecioCongelado,
+          modificadores: [],
+          consumos: agruparConsumos(dp.consumos),
+          pedidoProductoId: dp.pedidoProductoId ?? null,
+        })
+      }
+    } else {
+      const subtotalModificadores = it.detalle.modificadores.reduce((acc, m) => acc + m.costoAplicado, 0)
+      total += (it.detalle.precioCongelado + subtotalModificadores) * it.detalle.cantidad
+      ventaRows.push({
+        data: {
+          productoId: it.detalle.productoId,
+          cantidad: it.detalle.cantidad,
+          precioCongelado: it.detalle.precioCongelado,
+          esMitadYMitad: it.detalle.esMitadYMitad,
+          ...(it.detalle.esMitadYMitad
+            ? {
+                sabor1ProductoId: it.detalle.sabor1ProductoId,
+                sabor2ProductoId: it.detalle.sabor2ProductoId,
+              }
+            : {}),
+        },
+        comboId: null,
+        comboPrecioCongelado: null,
+        modificadores: it.detalle.modificadores,
+        consumos: agruparConsumos(it.consumos),
+        pedidoProductoId: it.detalle.pedidoProductoId ?? null,
+      })
+    }
+  }
 
   const venta = await tx.venta.create({
     data: {
@@ -323,28 +504,31 @@ export async function ejecutarVenta(tx, {
     },
   })
 
-  for (const d of detalleProductos) {
+  const filasCreadas = []
+  for (const row of ventaRows) {
     const ventaProducto = await tx.venta_Producto.create({
       data: {
         ventaId: venta.id,
-        productoId: d.productoId,
-        cantidad: d.cantidad,
-        precioCongelado: d.precioCongelado,
-        esMitadYMitad: d.esMitadYMitad,
+        productoId: row.data.productoId,
+        cantidad: row.data.cantidad,
+        precioCongelado: row.data.precioCongelado,
+        esMitadYMitad: row.data.esMitadYMitad,
+        comboId: row.comboId,
+        comboPrecioCongelado: row.comboPrecioCongelado,
       },
     })
 
-    if (d.esMitadYMitad) {
+    if (row.data.esMitadYMitad) {
       await tx.venta_Producto_Mitad.create({
         data: {
           ventaProductoId: ventaProducto.id,
-          sabor1ProductoId: d.sabor1ProductoId,
-          sabor2ProductoId: d.sabor2ProductoId,
+          sabor1ProductoId: row.data.sabor1ProductoId,
+          sabor2ProductoId: row.data.sabor2ProductoId,
         },
       })
     }
 
-    for (const m of d.modificadores) {
+    for (const m of row.modificadores) {
       await tx.venta_Producto_Modificador.create({
         data: {
           ventaProductoId: ventaProducto.id,
@@ -353,24 +537,68 @@ export async function ejecutarVenta(tx, {
         },
       })
     }
+    filasCreadas.push({ ventaProducto, row })
   }
 
-  // 6) Movimiento_Inventario tipo Salida_venta, uno por cuenta, con la
-  //    cantidad REAL usada (negativa) y referencia a la venta.
-  for (const u of usos) {
-    await tx.movimiento_Inventario.create({
-      data: {
-        ...(u.tipo === 'ingrediente'
-          ? { ingredienteId: u.id }
-          : { productoId: u.id }),
-        tipoMovimiento: 'Salida_venta',
-        cantidad: -u.cantidad,
-        referenciaId: venta.id,
-        referenciaTipo: 'Venta',
-      },
+  // Distribuir "usar disponible" (stock insuficiente confirmado) PROPORCIONAL-
+  // MENTE entre las filas que consumen cada cuenta topeada. Así cada Salida_venta
+  // queda vinculada a su ventaProductoId/pedidoProductoId y un regreso parcial
+  // (devolución por ventaProductoId o quitar un Pedido_Producto) revierte EXACTO
+  // el monto parcial realmente descontado — ni la receta completa ni cero.
+  // capShares: `tipo:id` -> Map(fila -> cantidad)
+  const capShares = new Map()
+  for (const [key, cuenta] of cuentasTope) {
+    const filas = []
+    for (let i = 0; i < ventaRows.length; i++) {
+      for (const c of ventaRows[i].consumos) {
+        if (`${c.tipo}:${c.id}` === key) filas.push({ row: i, cantidad: c.cantidad })
+      }
+    }
+    const totalRequerido = filas.reduce((acc, f) => acc + f.cantidad, 0)
+    if (totalRequerido <= 0) continue
+    let restante = cuenta.cantidad
+    const porFila = new Map()
+    filas.forEach((f, idx) => {
+      const esUltima = idx === filas.length - 1
+      let share
+      if (esUltima) {
+        share = restante
+      } else {
+        share = Math.min(Math.round((f.cantidad * cuenta.cantidad) / totalRequerido), f.cantidad)
+        share = Math.max(0, Math.min(share, restante))
+      }
+      restante -= share
+      porFila.set(f.row, share)
     })
-    if (u.tipo === 'ingrediente') {
-      await sincronizarStockIngrediente(tx, u.id)
+    capShares.set(key, porFila)
+  }
+
+  // 6) Movimiento_Inventario tipo Salida_venta, uno por cuenta de CADA fila
+  //    vendida (con su ventaProductoId/pedidoProductoId para revertir EXACTO
+  //    en devoluciones, cancelaciones y ediciones — sin recalcular con la
+  //    receta actual). Las cuentas con stock insuficiente confirmado usan la
+  //    fracción realmente descontada (capShares), no el consumo completo.
+  for (let i = 0; i < filasCreadas.length; i++) {
+    const { ventaProducto, row } = filasCreadas[i]
+    for (const c of row.consumos) {
+      const cantidad = capShares.get(`${c.tipo}:${c.id}`)?.get(i) ?? c.cantidad
+      if (!cantidad) continue
+      await tx.movimiento_Inventario.create({
+        data: {
+          ...(c.tipo === 'ingrediente'
+            ? { ingredienteId: c.id }
+            : { productoId: c.id }),
+          tipoMovimiento: 'Salida_venta',
+          cantidad: -cantidad,
+          referenciaId: venta.id,
+          referenciaTipo: 'Venta',
+          ventaProductoId: ventaProducto.id,
+          pedidoProductoId: row.pedidoProductoId,
+        },
+      })
+      if (c.tipo === 'ingrediente') {
+        await sincronizarStockIngrediente(tx, c.id)
+      }
     }
   }
 
@@ -386,6 +614,7 @@ export async function ejecutarVenta(tx, {
       productos: {
         include: {
           producto: { select: { id: true, nombre: true } },
+          combo: { select: { id: true, nombre: true } },
           mitadYMitad: true,
           modificadores: { include: { modificador: { select: { id: true, nombre: true } } } },
         },
@@ -414,7 +643,9 @@ export const crearVenta = asyncHandler(async (req, res) => {
       productos: req.body.productos,
       metodoPago: req.body.metodoPago,
       noCobrar: req.body.noCobrar,
-      esVentaPreviaApertura: req.body.esVentaPreviaApertura,
+      // Seguridad: es_venta_previa_apertura solo lo asigna internamente abrir
+      // caja (Módulo 05). Un valor enviado en el body SIEMPRE se ignora.
+      esVentaPreviaApertura: false,
       pedidoId: req.body.pedidoId,
       usarDisponible: req.body.usarDisponible,
       usuarioId,
@@ -426,6 +657,7 @@ export const crearVenta = asyncHandler(async (req, res) => {
     return res.status(STOCK_INSUFICIENTE_STATUS).json({
       mensaje: resultado.mensaje,
       stockInsuficiente: resultado.faltantes,
+      ...(resultado.opcionesPrecio ? { opcionesPrecio: resultado.opcionesPrecio } : {}),
     })
   }
 

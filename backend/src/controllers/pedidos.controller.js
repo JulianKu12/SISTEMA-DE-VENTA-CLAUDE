@@ -15,7 +15,6 @@ import {
   procesarItem,
   calcularTotalItems,
   ejecutarVenta,
-  calcularConsumoVentaProducto,
 } from './ventas.controller.js'
 import { obtenerConfiguracion } from './config.controller.js'
 
@@ -27,6 +26,7 @@ const includePedido = {
   productos: {
     include: {
       producto: { select: { id: true, nombre: true } },
+      combo: { select: { id: true, nombre: true } },
       mitadYMitad: {
         include: {
           sabor1Producto: { select: { id: true, nombre: true } },
@@ -54,23 +54,60 @@ function validarMetodoPago(tipo, metodoPago) {
 
 // Convierte los Pedido_Producto ya guardados al formato que acepta ejecutarVenta,
 // conservando los precios/costos congelados al momento de capturar el pedido.
-function productosDesdePedido(pedido) {
-  return pedido.productos.map((pp) => ({
-    productoId: pp.productoId,
-    cantidad: pp.cantidad,
-    esMitadYMitad: pp.esMitadYMitad,
-    precioCongelado: pp.precioCongelado,
-    ...(pp.esMitadYMitad && pp.mitadYMitad
-      ? {
-          sabor1ProductoId: pp.mitadYMitad.sabor1ProductoId,
-          sabor2ProductoId: pp.mitadYMitad.sabor2ProductoId,
-        }
-      : {}),
-    modificadores: pp.modificadores.map((m) => ({
-      modificadorId: m.modificadorId,
-      costoAplicado: m.costoAplicado,
-    })),
-  }))
+// Los ítems de combo se reagrupan por comboId (el combo se guarda expandido en
+// varias filas, una por producto incluido) y se conserva el precio del combo.
+async function productosDesdePedido(tx, pedido) {
+  const productos = await tx.pedido_Producto.findMany({
+    where: { pedidoId: pedido.id },
+    include: { mitadYMitad: true, modificadores: true },
+  })
+
+  const items = []
+  const gruposCombo = new Map()
+  for (const pp of productos) {
+    if (pp.comboId) {
+      if (!gruposCombo.has(pp.comboId)) {
+        gruposCombo.set(pp.comboId, { comboPrecioCongelado: pp.comboPrecioCongelado, filas: [] })
+      }
+      gruposCombo.get(pp.comboId).filas.push(pp)
+    } else {
+      items.push({
+        productoId: pp.productoId,
+        cantidad: pp.cantidad,
+        esMitadYMitad: pp.esMitadYMitad,
+        precioCongelado: pp.precioCongelado,
+        pedidoProductoId: pp.id,
+        ...(pp.esMitadYMitad && pp.mitadYMitad
+          ? {
+              sabor1ProductoId: pp.mitadYMitad.sabor1ProductoId,
+              sabor2ProductoId: pp.mitadYMitad.sabor2ProductoId,
+            }
+          : {}),
+        modificadores: pp.modificadores.map((m) => ({
+          modificadorId: m.modificadorId,
+          costoAplicado: m.costoAplicado,
+        })),
+      })
+    }
+  }
+
+  for (const [comboId, g] of gruposCombo) {
+    const combo = await tx.combo.findUnique({
+      where: { id: comboId },
+      include: { productos: true },
+    })
+    if (!combo) throw new HttpError(404, `El combo ${comboId} del pedido no existe`)
+    const cpCant =
+      combo.productos.find((cp) => cp.productoId === g.filas[0].productoId)?.cantidad || 1
+    items.push({
+      comboId,
+      cantidad: g.filas[0].cantidad / cpCant,
+      precioCongelado: g.comboPrecioCongelado ?? combo.precioEspecial,
+      pedidoProductos: g.filas.map((f) => ({ productoId: f.productoId, pedidoProductoId: f.id })),
+    })
+  }
+
+  return items
 }
 
 export const crearPedido = asyncHandler(async (req, res) => {
@@ -114,11 +151,10 @@ export const crearPedido = asyncHandler(async (req, res) => {
       if (!referencia) throw new HttpError(404, 'La referencia indicada no existe')
     }
 
-    // Procesar los ítems (valida productos/modificadores y congela precios).
-    const requerimientos = new Map()
+    // Procesar los ítems (valida productos/combos/modificadores y congela precios).
     const itemsProcesados = []
     for (const item of productos) {
-      itemsProcesados.push(await procesarItem(tx, item, requerimientos))
+      itemsProcesados.push(await procesarItem(tx, item))
     }
     const totalProductos = calcularTotalItems(itemsProcesados)
 
@@ -173,28 +209,68 @@ export const crearPedido = asyncHandler(async (req, res) => {
       },
     })
 
-    for (const d of itemsProcesados) {
-      const pp = await tx.pedido_Producto.create({
-        data: {
-          pedidoId: pedido.id,
-          productoId: d.productoId,
-          cantidad: d.cantidad,
-          precioCongelado: d.precioCongelado,
-          esMitadYMitad: d.esMitadYMitad,
-        },
-      })
-      if (d.esMitadYMitad) {
-        await tx.pedido_Producto_Mitad.create({
+    // Crear los Pedido_Producto (un combo se expande en una fila por producto
+    // incluido, todas con el mismo comboId) y preparar los ítems congelados que
+    // se reutilizarán si el pedido genera su Venta en este mismo flujo.
+    const itemsVenta = []
+    for (const it of itemsProcesados) {
+      if (it.tipo === 'combo') {
+        const filas = []
+        for (const dp of it.detalleProductos) {
+          const pp = await tx.pedido_Producto.create({
+            data: {
+              pedidoId: pedido.id,
+              productoId: dp.productoId,
+              cantidad: dp.cantidad,
+              precioCongelado: dp.precioCongelado,
+              esMitadYMitad: false,
+              comboId: it.comboId,
+              comboPrecioCongelado: it.comboPrecioCongelado,
+            },
+          })
+          filas.push({ productoId: dp.productoId, pedidoProductoId: pp.id })
+        }
+        itemsVenta.push({
+          comboId: it.comboId,
+          cantidad: it.cantidad,
+          precioCongelado: it.comboPrecioCongelado,
+          pedidoProductos: filas,
+        })
+      } else {
+        const d = it.detalle
+        const pp = await tx.pedido_Producto.create({
           data: {
-            pedidoProductoId: pp.id,
-            sabor1ProductoId: d.sabor1ProductoId,
-            sabor2ProductoId: d.sabor2ProductoId,
+            pedidoId: pedido.id,
+            productoId: d.productoId,
+            cantidad: d.cantidad,
+            precioCongelado: d.precioCongelado,
+            esMitadYMitad: d.esMitadYMitad,
           },
         })
-      }
-      for (const m of d.modificadores) {
-        await tx.pedido_Producto_Modificador.create({
-          data: { pedidoProductoId: pp.id, modificadorId: m.modificadorId, costoAplicado: m.costoAplicado },
+        if (d.esMitadYMitad) {
+          await tx.pedido_Producto_Mitad.create({
+            data: {
+              pedidoProductoId: pp.id,
+              sabor1ProductoId: d.sabor1ProductoId,
+              sabor2ProductoId: d.sabor2ProductoId,
+            },
+          })
+        }
+        for (const m of d.modificadores) {
+          await tx.pedido_Producto_Modificador.create({
+            data: { pedidoProductoId: pp.id, modificadorId: m.modificadorId, costoAplicado: m.costoAplicado },
+          })
+        }
+        itemsVenta.push({
+          productoId: d.productoId,
+          cantidad: d.cantidad,
+          esMitadYMitad: d.esMitadYMitad,
+          precioCongelado: d.precioCongelado,
+          pedidoProductoId: pp.id,
+          ...(d.esMitadYMitad
+            ? { sabor1ProductoId: d.sabor1ProductoId, sabor2ProductoId: d.sabor2ProductoId }
+            : {}),
+          modificadores: d.modificadores,
         })
       }
     }
@@ -210,7 +286,7 @@ export const crearPedido = asyncHandler(async (req, res) => {
         )
       }
       const r = await ejecutarVenta(tx, {
-        productos: itemsProcesados,
+        productos: itemsVenta,
         metodoPago: noCobrar ? 'Efectivo' : montoResuelto,
         noCobrar,
         pedidoId: pedido.id,
@@ -301,7 +377,7 @@ export const cambiarEstadoPago = asyncHandler(async (req, res) => {
     }
 
     const r = await ejecutarVenta(tx, {
-      productos: productosDesdePedido(pedido),
+      productos: await productosDesdePedido(tx, pedido),
       metodoPago: pedido.noCobrar ? 'Efectivo' : pedido.metodoPago,
       noCobrar: pedido.noCobrar,
       pedidoId: pedido.id,
@@ -346,33 +422,32 @@ const TRANSICIONES = {
   Cancelado: [],
 }
 
-// Regresa al inventario el consumo de los Pedido_Producto del pedido (solo
-// aplica si el pedido ya generó su Venta: si no, nada fue descontado aún).
+// Regresa al inventario el consumo del pedido al cancelarse (solo aplica si el
+// pedido ya generó su Venta: si no, nada fue descontado aún). Revierten los
+// Movimiento_Inventario Salida_venta EXACTOS de esa Venta (con modificadores,
+// mitad y mitad, usar_disponible y combos ya aplicados) — nunca se recalcula
+// con la receta actual (evita el drift si cambió la receta).
 async function regresarInventarioDePedido(tx, pedido) {
   if (!pedido.ventaId) return 0
-  const productos = await tx.pedido_Producto.findMany({
-    where: { pedidoId: pedido.id },
-    include: { mitadYMitad: true, modificadores: true },
+  const salidas = await tx.movimiento_Inventario.findMany({
+    where: { referenciaId: pedido.ventaId, referenciaTipo: 'Venta', tipoMovimiento: 'Salida_venta' },
   })
   let movimientos = 0
-  for (const pp of productos) {
-    const consumo = await calcularConsumoVentaProducto(tx, pp, { ignorarEstado: true })
-    for (const [key, cantidad] of consumo) {
-      const [tipo, idStr] = key.split(':')
-      const id = Number(idStr)
-      await tx.movimiento_Inventario.create({
-        data: {
-          ...(tipo === 'ingrediente' ? { ingredienteId: id } : { productoId: id }),
-          tipoMovimiento: 'Cancelacion_regreso',
-          cantidad,
-          referenciaId: pedido.id,
-          referenciaTipo: 'Cancelacion',
-        },
-      })
-      movimientos++
-      if (tipo === 'ingrediente') {
-        await sincronizarStockIngrediente(tx, id)
-      }
+  for (const mv of salidas) {
+    await tx.movimiento_Inventario.create({
+      data: {
+        ...(mv.ingredienteId != null
+          ? { ingredienteId: mv.ingredienteId }
+          : { productoId: mv.productoId }),
+        tipoMovimiento: 'Cancelacion_regreso',
+        cantidad: -mv.cantidad,
+        referenciaId: pedido.id,
+        referenciaTipo: 'Cancelacion',
+      },
+    })
+    movimientos++
+    if (mv.ingredienteId != null) {
+      await sincronizarStockIngrediente(tx, mv.ingredienteId)
     }
   }
   return movimientos
@@ -478,21 +553,25 @@ export const editarPedido = asyncHandler(async (req, res) => {
         if (!pp) throw new HttpError(404, 'El pedidoProductoId indicado no pertenece a este pedido')
 
         if (q.regresaAInventario && pedido.ventaId) {
-          const consumo = await calcularConsumoVentaProducto(tx, pp, { ignorarEstado: true })
-          for (const [key, cantidad] of consumo) {
-            const [tipo, idStr] = key.split(':')
-            const cid = Number(idStr)
+          // Revertir EXACTAMENTE las Salida_venta de ese Pedido_Producto (con
+          // los descuentos reales ya aplicados), sin recalcular con la receta.
+          const salidas = await tx.movimiento_Inventario.findMany({
+            where: { pedidoProductoId: pp.id, tipoMovimiento: 'Salida_venta' },
+          })
+          for (const mv of salidas) {
             await tx.movimiento_Inventario.create({
               data: {
-                ...(tipo === 'ingrediente' ? { ingredienteId: cid } : { productoId: cid }),
+                ...(mv.ingredienteId != null
+                  ? { ingredienteId: mv.ingredienteId }
+                  : { productoId: mv.productoId }),
                 tipoMovimiento: 'Cancelacion_regreso',
-                cantidad,
+                cantidad: -mv.cantidad,
                 referenciaId: pedido.id,
                 referenciaTipo: 'Cancelacion',
               },
             })
-            if (tipo === 'ingrediente') {
-              await sincronizarStockIngrediente(tx, cid)
+            if (mv.ingredienteId != null) {
+              await sincronizarStockIngrediente(tx, mv.ingredienteId)
             }
           }
         }
@@ -502,48 +581,83 @@ export const editarPedido = asyncHandler(async (req, res) => {
       }
     }
 
-    // Agregar productos: se congelan precios/costos al momento.
+    // Agregar productos: se congelan precios/costos al momento. Un combo se
+    // expande en una fila por producto incluido (todas con el mismo comboId).
     if (Array.isArray(agregarProductos) && agregarProductos.length > 0) {
-      const requerimientos = new Map()
       for (const item of agregarProductos) {
-        const d = await procesarItem(tx, item, requerimientos)
-        const pp = await tx.pedido_Producto.create({
-          data: {
-            pedidoId: pedido.id,
-            productoId: d.productoId,
-            cantidad: d.cantidad,
-            precioCongelado: d.precioCongelado,
-            esMitadYMitad: d.esMitadYMitad,
-          },
-        })
-        if (d.esMitadYMitad) {
-          await tx.pedido_Producto_Mitad.create({
+        const it = await procesarItem(tx, item)
+        if (it.tipo === 'combo') {
+          for (const dp of it.detalleProductos) {
+            await tx.pedido_Producto.create({
+              data: {
+                pedidoId: pedido.id,
+                productoId: dp.productoId,
+                cantidad: dp.cantidad,
+                precioCongelado: dp.precioCongelado,
+                esMitadYMitad: false,
+                comboId: it.comboId,
+                comboPrecioCongelado: it.comboPrecioCongelado,
+              },
+            })
+          }
+        } else {
+          const d = it.detalle
+          const pp = await tx.pedido_Producto.create({
             data: {
-              pedidoProductoId: pp.id,
-              sabor1ProductoId: d.sabor1ProductoId,
-              sabor2ProductoId: d.sabor2ProductoId,
+              pedidoId: pedido.id,
+              productoId: d.productoId,
+              cantidad: d.cantidad,
+              precioCongelado: d.precioCongelado,
+              esMitadYMitad: d.esMitadYMitad,
             },
           })
-        }
-        for (const m of d.modificadores) {
-          await tx.pedido_Producto_Modificador.create({
-            data: { pedidoProductoId: pp.id, modificadorId: m.modificadorId, costoAplicado: m.costoAplicado },
-          })
+          if (d.esMitadYMitad) {
+            await tx.pedido_Producto_Mitad.create({
+              data: {
+                pedidoProductoId: pp.id,
+                sabor1ProductoId: d.sabor1ProductoId,
+                sabor2ProductoId: d.sabor2ProductoId,
+              },
+            })
+          }
+          for (const m of d.modificadores) {
+            await tx.pedido_Producto_Modificador.create({
+              data: { pedidoProductoId: pp.id, modificadorId: m.modificadorId, costoAplicado: m.costoAplicado },
+            })
+          }
         }
       }
     }
 
-    // Recalcular total y cambio_a_llevar.
+    // Recalcular total y cambio_a_llevar. Las filas de un combo contribuyen con
+    // el precio del combo (comboPrecioCongelado x unidades de combo), no con la
+    // suma de precios de sus productos.
     const productosFinales = await tx.pedido_Producto.findMany({
       where: { pedidoId: pedido.id },
       include: { modificadores: true },
     })
-    const items = productosFinales.map((pp) => ({
-      precioCongelado: pp.precioCongelado,
-      cantidad: pp.cantidad,
-      modificadores: pp.modificadores.map((m) => ({ costoAplicado: m.costoAplicado })),
-    }))
-    const total = calcularTotalItems(items) + (pedido.costoEnvio ?? 0)
+    const comboIds = [...new Set(productosFinales.filter((p) => p.comboId).map((p) => p.comboId))]
+    const mapaCp = new Map()
+    if (comboIds.length) {
+      const combos = await tx.combo.findMany({
+        where: { id: { in: comboIds } },
+        include: { productos: true },
+      })
+      for (const c of combos) {
+        for (const cp of c.productos) mapaCp.set(`${c.id}:${cp.productoId}`, cp.cantidad)
+      }
+    }
+    let total = 0
+    for (const pp of productosFinales) {
+      if (pp.comboId) {
+        const cpCant = mapaCp.get(`${pp.comboId}:${pp.productoId}`) ?? 1
+        total += pp.comboPrecioCongelado * (pp.cantidad / cpCant)
+      } else {
+        const subtotalModificadores = pp.modificadores.reduce((acc, m) => acc + m.costoAplicado, 0)
+        total += (pp.precioCongelado + subtotalModificadores) * pp.cantidad
+      }
+    }
+    total += pedido.costoEnvio ?? 0
 
     let cambioALlevar = pedido.cambioALlevar
     if (pedido.metodoPago === 'Efectivo' && !pedido.noCobrar && pedido.montoReferenciaPago != null) {

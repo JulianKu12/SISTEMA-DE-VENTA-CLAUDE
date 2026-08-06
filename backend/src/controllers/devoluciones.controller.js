@@ -3,7 +3,6 @@ import { asyncHandler } from '../utils/asyncHandler.js'
 import { HttpError } from '../utils/httpError.js'
 import { MOTIVOS_DEVOLUCION, MEDIOS_DEVOLUCION, esEnumValido } from '../utils/enums.js'
 import { sincronizarStockIngrediente } from '../utils/inventario.js'
-import { calcularConsumoVentaProducto } from './ventas.controller.js'
 
 export const crearDevolucion = asyncHandler(async (req, res) => {
   const { ventaId, monto, motivo, regresaAInventario = false, medioDevolucion, ventaProductoIds } = req.body
@@ -43,37 +42,36 @@ export const crearDevolucion = asyncHandler(async (req, res) => {
     let regresos = 0
     if (regresaAInventario === true) {
       if (Array.isArray(ventaProductoIds) && ventaProductoIds.length > 0) {
-        // Devolución PARCIAL: solo regresan los ingredientes de los
-        // Venta_Producto indicados. Se recalcula su consumo con la misma
-        // lógica de la venta (modificadores, mitad y mitad, reventa).
+        // Devolución PARCIAL: solo regresan las Salida_venta EXACTAS de los
+        // Venta_Producto indicados (modificadores, mitad y mitad, combos y
+        // "usar disponible" ya aplicados en el momento de la venta) — no se
+        // recalcula con la receta actual (evita el drift).
         const ids = [...new Set(ventaProductoIds.map(Number))]
         const ventaProductos = await tx.venta_Producto.findMany({
           where: { id: { in: ids }, ventaId: venta.id },
-          include: { mitadYMitad: true, modificadores: true },
+          select: { id: true },
         })
         if (ventaProductos.length !== ids.length) {
           throw new HttpError(400, 'Alguno de los ventaProductoIds no pertenece a la venta indicada')
         }
-        for (const vp of ventaProductos) {
-          const consumo = await calcularConsumoVentaProducto(tx, vp, { ignorarEstado: true })
-          for (const [key, cantidad] of consumo) {
-            const [tipo, idStr] = key.split(':')
-            const id = Number(idStr)
-            await tx.movimiento_Inventario.create({
-              data: {
-                ...(tipo === 'ingrediente'
-                  ? { ingredienteId: id }
-                  : { productoId: id }),
-                tipoMovimiento: 'Devolucion_regreso',
-                cantidad,
-                referenciaId: devolucion.id,
-                referenciaTipo: 'Devolucion',
-              },
-            })
-            regresos++
-            if (tipo === 'ingrediente') {
-              await sincronizarStockIngrediente(tx, id)
-            }
+        const salidas = await tx.movimiento_Inventario.findMany({
+          where: { ventaProductoId: { in: ids }, tipoMovimiento: 'Salida_venta' },
+        })
+        for (const mv of salidas) {
+          await tx.movimiento_Inventario.create({
+            data: {
+              ...(mv.ingredienteId != null
+                ? { ingredienteId: mv.ingredienteId }
+                : { productoId: mv.productoId }),
+              tipoMovimiento: 'Devolucion_regreso',
+              cantidad: -mv.cantidad,
+              referenciaId: devolucion.id,
+              referenciaTipo: 'Devolucion',
+            },
+          })
+          regresos++
+          if (mv.ingredienteId != null) {
+            await sincronizarStockIngrediente(tx, mv.ingredienteId)
           }
         }
       } else {

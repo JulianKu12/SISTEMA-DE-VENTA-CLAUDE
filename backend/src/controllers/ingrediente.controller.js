@@ -62,6 +62,9 @@ export const crear = asyncHandler(async (req, res) => {
     })
     if (costoUltimaCompra != null) {
       const usuarioId = resolverUsuario(req)
+      // Se asocia al Dia_Operativo Abierto actual; si no hay ninguno, queda
+      // null y se asocia al siguiente que se abra (mismo patrón que Gasto).
+      const dia = await tx.dia_Operativo.findFirst({ where: { estado: 'Abierto' } })
       await tx.gasto.create({
         data: {
           concepto: `Entrada de inventario: ${nuevo.nombre}`,
@@ -69,6 +72,7 @@ export const crear = asyncHandler(async (req, res) => {
           categoria: 'Insumos',
           metodoPago: 'Efectivo',
           origen: 'Automatico_por_entrada_inventario',
+          diaOperativoId: dia?.id ?? null,
           usuarioId,
         },
       })

@@ -279,12 +279,14 @@ model Venta_Producto {
   precioCongelado Float
   esMitadYMitad   Boolean @default(false)
   comboId         Int?
+  comboPrecioCongelado Float?
 
   venta         Venta                        @relation(fields: [ventaId], references: [id])
   producto      Producto                     @relation(fields: [productoId], references: [id])
   combo         Combo?                       @relation(fields: [comboId], references: [id])
   mitadYMitad   Venta_Producto_Mitad?
   modificadores Venta_Producto_Modificador[]
+  movimientosInventario Movimiento_Inventario[]
 }
 
 model Venta_Producto_Mitad {
@@ -320,9 +322,13 @@ model Movimiento_Inventario {
   fechaHora      DateTime                  @default(now())
   referenciaId   Int?
   referenciaTipo TipoReferenciaMovimiento?
+  ventaProductoId  Int?
+  pedidoProductoId Int?
 
-  ingrediente Ingrediente? @relation("MovIngrediente", fields: [ingredienteId], references: [id])
-  producto    Producto?    @relation("MovProducto", fields: [productoId], references: [id])
+  ingrediente    Ingrediente?    @relation("MovIngrediente", fields: [ingredienteId], references: [id])
+  producto       Producto?       @relation("MovProducto", fields: [productoId], references: [id])
+  ventaProducto  Venta_Producto? @relation(fields: [ventaProductoId], references: [id])
+  pedidoProducto Pedido_Producto? @relation(fields: [pedidoProductoId], references: [id])
 }
 
 // ---------------------------------------------------------------------------
@@ -446,12 +452,14 @@ model Pedido_Producto {
   precioCongelado Float
   esMitadYMitad   Boolean @default(false)
   comboId         Int?
+  comboPrecioCongelado Float?
 
   pedido      Pedido                        @relation(fields: [pedidoId], references: [id])
   producto    Producto                      @relation(fields: [productoId], references: [id])
   combo       Combo?                        @relation(fields: [comboId], references: [id])
   mitadYMitad Pedido_Producto_Mitad?
   modificadores Pedido_Producto_Modificador[]
+  movimientosInventario Movimiento_Inventario[]
 }
 
 model Pedido_Producto_Mitad {
