@@ -1,6 +1,7 @@
 import { Navigate, Route, Routes } from 'react-router-dom'
 import { useAuth } from './context/useAuth'
 import LoginPage from './pages/LoginPage'
+import NuevoPedidoPage from './pages/NuevoPedidoPage'
 import PedidosPage from './pages/PedidosPage'
 import PlaceholderPage from './pages/PlaceholderPage'
 
@@ -26,7 +27,7 @@ function App() {
         path="/pedidos/nuevo"
         element={
           <RutaProtegida>
-            <PlaceholderPage titulo="Nuevo Pedido" />
+            <NuevoPedidoPage />
           </RutaProtegida>
         }
       />
