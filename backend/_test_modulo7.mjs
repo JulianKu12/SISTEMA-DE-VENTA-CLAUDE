@@ -1,4 +1,5 @@
 import { PrismaClient } from '@prisma/client'
+import bcrypt from 'bcrypt'
 
 const prisma = new PrismaClient()
 const BASE = 'http://localhost:3001'
@@ -36,7 +37,7 @@ async function login(usuario, contraseña) {
   return { status: res.status, token: data.token, data }
 }
 
-const admin = await prisma.usuario.create({ data: { tipo: 'Administrador', usuario: 'admin_test7', contraseña: 'admin7' } })
+const admin = await prisma.usuario.create({ data: { tipo: 'Administrador', usuario: 'admin_test7', contraseña: await bcrypt.hash('admin7', 10) } })
 
 const coca = await prisma.producto.create({ data: { nombre: 'Coca7', precio: 15, tipo: 'Reventa_directa' } })
 await prisma.movimiento_Inventario.create({ data: { productoId: coca.id, tipoMovimiento: 'Entrada', cantidad: 10 } })
@@ -53,6 +54,11 @@ try {
   ok(malLogin.status === 401, 'login fallido -> 401')
   const sinBody = await req('POST', '/api/auth/login', {})
   ok(sinBody.status === 400, 'login sin credenciales -> 400')
+
+  console.log('== Contraseñas hasheadas con bcrypt ==')
+  const adminDb = await prisma.usuario.findUnique({ where: { id: admin.id } })
+  ok(typeof adminDb.contraseña === 'string' && adminDb.contraseña.startsWith('$2'), 'contraseña del admin guardada como hash bcrypt ($2...)')
+  ok(adminDb.contraseña !== 'admin7', 'la contraseña NO se guarda en texto plano')
 
   console.log('== Configuracion global: opciones de cambio ==')
   const cfgGet = await req('GET', '/api/configuracion', undefined, tokenAdmin)
@@ -73,6 +79,8 @@ try {
   ok(r1.status === 201 && r1.data.usuario.tipo === 'Repartidor', 'alta repartidor 1 con usuario vinculado')
   const r2 = await req('POST', '/api/empleados', { nombre: 'Luis7', usuario: 'luis7', contraseña: 'luis7pass' }, tokenAdmin)
   ok(r2.status === 201, 'alta repartidor 2')
+  const repDb = await prisma.usuario.findUnique({ where: { usuario: 'pedro7' } })
+  ok(typeof repDb.contraseña === 'string' && repDb.contraseña.startsWith('$2'), 'contraseña del repartidor (creado por API) guardada hasheada')
 
   const loginRep = await login('pedro7', 'pedro7pass')
   ok(loginRep.status === 200 && loginRep.data.usuario.tipo === 'Repartidor', 'login repartidor exitoso con token')
@@ -152,6 +160,43 @@ try {
   ok(ventaNoCobrar.data.venta.usuarioId === loginRep.data.usuario.id, 'usuarioId falso en body es ignorado: auditoría registra el usuario real del token')
   const ventaNormal = await req('POST', '/api/ventas', { productos: [{ productoId: coca.id, cantidad: 1 }], metodoPago: 'Efectivo' }, tokenRep)
   ok(ventaNormal.status === 403, 'repartidor NO puede registrar venta normal (sin No cobrar) -> 403')
+
+  console.log('== Reportes de ventas solo Administrador ==')
+  const ventasComoRep = await req('GET', '/api/ventas', undefined, tokenRep)
+  ok(ventasComoRep.status === 403, 'repartidor -> GET /api/ventas 403')
+  const ncComoRep = await req('GET', '/api/ventas/no-cobrar', undefined, tokenRep)
+  ok(ncComoRep.status === 403, 'repartidor -> GET /api/ventas/no-cobrar 403')
+  const ventasComoAdmin = await req('GET', '/api/ventas', undefined, tokenAdmin)
+  ok(ventasComoAdmin.status === 200 && Array.isArray(ventasComoAdmin.data) && ventasComoAdmin.data.length >= 1, 'admin -> GET /api/ventas 200 con ventas')
+  const ncComoAdmin = await req('GET', '/api/ventas/no-cobrar', undefined, tokenAdmin)
+  ok(ncComoAdmin.status === 200 && ncComoAdmin.data.some((v) => v.id === ventaNoCobrar.data.venta.id && Array.isArray(v.productos) && v.productos[0].producto && typeof v.productos[0].costo === 'number' && v.usuario), 'admin -> GET /api/ventas/no-cobrar 200 (producto, costo, usuario)')
+
+  console.log('== Repartidor marca "No cobrar" al entregar ==')
+  const pedidoEntregaNC = await req('POST', '/api/pedidos', {
+    tipo: 'A_domicilio', origen: 'Telefono', nombreClienteLibre: 'NC Entrega',
+    productos: [{ productoId: coca.id, cantidad: 1 }], noCobrar: true,
+  }, tokenRep)
+  ok(pedidoEntregaNC.status === 201 && pedidoEntregaNC.data.noCobrar === true && pedidoEntregaNC.data.estadoPago === 'Pendiente_pago' && pedidoEntregaNC.data.venta === null, 'repartidor crea pedido No cobrar (Pendiente_pago, sin venta aún)')
+  const enviadoNC = await req('PATCH', `/api/pedidos/${pedidoEntregaNC.data.id}/estado-preparacion`, { estadoPreparacion: 'Enviado', repartidorId: r1.data.id }, tokenAdmin)
+  ok(enviadoNC.status === 200 && enviadoNC.data.pedido.repartidorId === r1.data.id, 'admin asigna repartidor 1 al pedido NC')
+  const entregaNC = await req('PATCH', `/api/pedidos/${pedidoEntregaNC.data.id}/estado-preparacion`, { estadoPreparacion: 'Entregado', noCobrar: true }, tokenRep)
+  ok(entregaNC.status === 200 && entregaNC.data.pedido.estadoPreparacion === 'Entregado', 'repartidor marca Entregado con noCobrar')
+  ok(entregaNC.data.pedido.noCobrar === true, 'pedido queda noCobrar=true')
+  ok(entregaNC.data.pedido.estadoPago === 'Pagado', 'pedido pasa a Pagado sin que un admin ejecute estado_pago aparte')
+  ok(entregaNC.data.venta && entregaNC.data.venta.noCobrar === true, 'venta generada automáticamente como noCobrar=true')
+  ok(entregaNC.data.pedido.ventaId === entregaNC.data.venta.id, 'pedido.ventaId apunta a la venta generada')
+
+  // Entregado SIN noCobrar en un pedido Pendiente_pago: no genera venta.
+  const pedidoSinNC = await req('POST', '/api/pedidos', {
+    tipo: 'A_domicilio', origen: 'Telefono', nombreClienteLibre: 'Sin NC',
+    productos: [{ productoId: coca.id, cantidad: 1 }],
+    metodoPago: 'Efectivo', montoReferenciaPago: 20,
+  }, tokenAdmin)
+  ok(pedidoSinNC.status === 201 && pedidoSinNC.data.estadoPago === 'Pendiente_pago', 'admin crea pedido A_domicilio (Pendiente_pago)')
+  await req('PATCH', `/api/pedidos/${pedidoSinNC.data.id}/estado-preparacion`, { estadoPreparacion: 'Enviado', repartidorId: r1.data.id }, tokenAdmin)
+  const entregaSin = await req('PATCH', `/api/pedidos/${pedidoSinNC.data.id}/estado-preparacion`, { estadoPreparacion: 'Entregado' }, tokenRep)
+  ok(entregaSin.status === 200 && entregaSin.data.venta === undefined, 'Entregado sin noCobrar NO genera venta')
+  ok(entregaSin.data.pedido.estadoPago === 'Pendiente_pago', 'pedido sigue Pendiente_pago al entregar sin noCobrar')
 
   console.log('== Sin token -> 401 ==')
   const sinToken = await req('GET', '/api/pedidos', undefined, null)

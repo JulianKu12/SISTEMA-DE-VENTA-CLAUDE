@@ -1,4 +1,5 @@
 import { PrismaClient } from '@prisma/client'
+import bcrypt from 'bcrypt'
 
 const prisma = new PrismaClient()
 const BASE = 'http://localhost:3001'
@@ -32,7 +33,7 @@ async function stockProducto(id) {
   return agg._sum.cantidad ?? 0
 }
 
-const admin = await prisma.usuario.create({ data: { tipo: 'Administrador', usuario: 'admin_test6', contraseña: 'x' } })
+const admin = await prisma.usuario.create({ data: { tipo: 'Administrador', usuario: 'admin_test6', contraseña: await bcrypt.hash('x', 10) } })
 
 async function loginAdmin() {
   const res = await fetch(BASE + '/api/auth/login', {
@@ -320,6 +321,15 @@ try {
   ok(cancelCap.status === 200 && cancelCap.data.movimientosCancelacionRegreso === 1, 'cancelación revierte el movimiento del parcial')
   const stockCap2_1 = await prisma.movimiento_Inventario.aggregate({ _sum: { cantidad: true }, where: { ingredienteId: capH2.id } })
   ok(stockCap2_1._sum.cantidad === 5, 'revierte EXACTO el parcial (5, no 6 de la receta ni 0) -> capH2 5')
+
+  console.log('== Cierre de caja: aviso de pedidos pendientes ==')
+  // Al final: P3 (Telefono+Para_recoger), P4 (Entregado) y el pedido de Ana
+  // siguen Pendiente_pago; de esos, solo P4 está Entregado.
+  const cerrar = await req('POST', '/api/caja/cerrar', { efectivoContado: 0, usuarioId: admin.id })
+  ok(cerrar.status === 200, 'cerrar caja')
+  ok(cerrar.data.pedidosPendientesPago.cantidad === 3, 'aviso: 3 pedidos Pendiente_pago')
+  ok(cerrar.data.pedidosEntregadosPendientesPago.cantidad === 1, 'aviso: 1 pedido Entregado+Pendiente_pago (cantidad real, no undefined)')
+  ok(cerrar.data.pedidosEntregadosPendientesPago.monto === 20, 'aviso: monto de Entregado+Pendiente_pago = 20')
 
   console.log(`\nResultado: ${fallas === 0 ? 'TODAS LAS PRUEBAS PASARON' : fallas + ' prueba(s) fallaron'}`)
 } catch (e) {

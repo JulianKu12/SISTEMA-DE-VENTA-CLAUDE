@@ -136,14 +136,17 @@ export const cerrarCaja = asyncHandler(async (req, res) => {
     const diferencia = efectivoContado - efectivoEsperado
 
     // Aviso al cerrar caja (docs/05 + docs/06): pedidos aún Pendiente_pago
-    // sin resolver, y el monto informativo de pedidos Entregado que siguen
-    // Pendiente_pago (repartidores aún en la calle).
-    const [countPendientes, entregadosPendientes] = await Promise.all([
+    // sin resolver, y el conteo + monto informativo de pedidos Entregado que
+    // siguen Pendiente_pago (repartidores aún en la calle).
+    const [countPendientes, entregadosPendientes, countEntregadosPendientes] = await Promise.all([
       tx.pedido.count({
         where: { estadoPago: 'Pendiente_pago', estadoPreparacion: { not: 'Cancelado' } },
       }),
       tx.pedido.aggregate({
         _sum: { total: true },
+        where: { estadoPreparacion: 'Entregado', estadoPago: 'Pendiente_pago' },
+      }),
+      tx.pedido.count({
         where: { estadoPreparacion: 'Entregado', estadoPago: 'Pendiente_pago' },
       }),
     ])
@@ -164,6 +167,7 @@ export const cerrarCaja = asyncHandler(async (req, res) => {
       devolucionesEfectivoCaja,
       pedidosPendientes: countPendientes,
       pedidosEntregadosPendientes: entregadosPendientes._sum.total ?? 0,
+      cantidadEntregadosPendientes: countEntregadosPendientes,
     }
   })
 
@@ -187,7 +191,7 @@ export const cerrarCaja = asyncHandler(async (req, res) => {
       cantidad: resultado.pedidosPendientes,
     },
     pedidosEntregadosPendientesPago: {
-      cantidad: resultado.pedidosEntregadosPendientes > 0 ? undefined : 0,
+      cantidad: resultado.cantidadEntregadosPendientes,
       monto: resultado.pedidosEntregadosPendientes,
     },
   })

@@ -1,4 +1,5 @@
 import { PrismaClient } from '@prisma/client'
+import bcrypt from 'bcrypt'
 
 const prisma = new PrismaClient()
 const BASE = 'http://localhost:3001'
@@ -27,7 +28,7 @@ async function req(method, path, body) {
   return { status: res.status, data }
 }
 
-const admin = await prisma.usuario.create({ data: { tipo: 'Administrador', usuario: 'admin_test4', contraseña: 'x' } })
+const admin = await prisma.usuario.create({ data: { tipo: 'Administrador', usuario: 'admin_test4', contraseña: await bcrypt.hash('x', 10) } })
 
 async function loginAdmin() {
   const res = await fetch(BASE + '/api/auth/login', {
@@ -271,6 +272,37 @@ try {
     usuarioId: admin.id,
   })
   ok(vPrev.status === 201 && vPrev.data.venta.esVentaPreviaApertura === false, 'body esVentaPreviaApertura=true es ignorado (queda false)')
+
+  console.log('== Reportes de ventas (GET /api/ventas) ==')
+  const listVentas = await req('GET', '/api/ventas')
+  ok(listVentas.status === 200 && Array.isArray(listVentas.data) && listVentas.data.length >= 4, 'listar ventas (admin)')
+  ok(listVentas.data.every((v) => v.usuario && Array.isArray(v.productos) && v.diaOperativo), 'cada venta incluye usuario, productos y dia_operativo')
+
+  const filtroMetodo = await req('GET', '/api/ventas?metodoPago=Tarjeta')
+  ok(filtroMetodo.status === 200 && filtroMetodo.data.every((v) => v.metodoPago === 'Tarjeta') && filtroMetodo.data.some((v) => v.id === r2.data.venta.id), 'filtrar ventas por metodoPago')
+
+  const filtroDia = await req('GET', `/api/ventas?diaOperativoId=${dia.id}`)
+  ok(filtroDia.status === 200 && filtroDia.data.length === listVentas.data.length, 'filtrar ventas por diaOperativoId')
+
+  const desdeTodo = await req('GET', `/api/ventas?fechaDesde=${encodeURIComponent('2000-01-01T00:00:00.000Z')}`)
+  ok(desdeTodo.status === 200 && desdeTodo.data.length === listVentas.data.length, 'rango de fecha: desde 2000 incluye todas')
+  const hastaNada = await req('GET', `/api/ventas?fechaHasta=${encodeURIComponent('2020-01-01T00:00:00.000Z')}`)
+  ok(hastaNada.status === 200 && hastaNada.data.length === 0, 'rango de fecha: hasta 2020 no incluye ninguna')
+  const filtroMal = await req('GET', '/api/ventas?metodoPago=Cripto')
+  ok(filtroMal.status === 400, 'metodoPago inválido en filtro -> 400')
+
+  console.log('== Reporte de auditoría "No cobrar" (GET /api/ventas/no-cobrar) ==')
+  const vNoCobrar = await req('POST', '/api/ventas', {
+    productos: [{ productoId: productoPrev.id, cantidad: 1 }],
+    noCobrar: true,
+    usuarioId: admin.id,
+  })
+  ok(vNoCobrar.status === 201 && vNoCobrar.data.venta.noCobrar === true, 'venta "No cobrar" registrada')
+  const repNC = await req('GET', '/api/ventas/no-cobrar')
+  ok(repNC.status === 200 && repNC.data.some((v) => v.id === vNoCobrar.data.venta.id), 'reporte no-cobrar incluye la venta marcada')
+  const nc = repNC.data.find((v) => v.id === vNoCobrar.data.venta.id)
+  ok(nc && Array.isArray(nc.productos) && nc.productos[0].producto && typeof nc.productos[0].costo === 'number' && nc.productos[0].cantidad === 1, 'reporte no-cobrar: producto, costo y cantidad')
+  ok(nc && nc.usuario && nc.usuario.id === admin.id && nc.fechaHora, 'reporte no-cobrar: usuario que la marcó y hora')
 
   // J = sin caja abierta
   await prisma.dia_Operativo.update({ where: { id: dia.id }, data: { estado: 'Cerrado' } })

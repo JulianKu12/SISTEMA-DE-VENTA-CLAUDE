@@ -1,4 +1,5 @@
 import { PrismaClient } from '@prisma/client'
+import bcrypt from 'bcrypt'
 
 const prisma = new PrismaClient()
 const BASE = 'http://localhost:3001'
@@ -31,7 +32,12 @@ async function req(method, path, body) {
 }
 
 const admin = await prisma.usuario.create({
-  data: { tipo: 'Administrador', nombre: null, usuario: 'admin_test', contraseña: 'x' },
+  data: {
+    tipo: 'Administrador',
+    nombre: null,
+    usuario: 'admin_test',
+    contraseña: await bcrypt.hash('x', 10),
+  },
 })
 
 try {

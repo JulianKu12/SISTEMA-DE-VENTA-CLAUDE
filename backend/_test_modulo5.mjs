@@ -1,4 +1,5 @@
 import { PrismaClient } from '@prisma/client'
+import bcrypt from 'bcrypt'
 
 const prisma = new PrismaClient()
 const BASE = 'http://localhost:3001'
@@ -32,7 +33,7 @@ async function stockProducto(id) {
   return agg._sum.cantidad ?? 0
 }
 
-const admin = await prisma.usuario.create({ data: { tipo: 'Administrador', usuario: 'admin_test5', contraseña: 'x' } })
+const admin = await prisma.usuario.create({ data: { tipo: 'Administrador', usuario: 'admin_test5', contraseña: await bcrypt.hash('x', 10) } })
 
 async function loginAdmin() {
   const res = await fetch(BASE + '/api/auth/login', {

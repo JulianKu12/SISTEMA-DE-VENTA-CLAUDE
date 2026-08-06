@@ -625,6 +625,95 @@ export async function ejecutarVenta(tx, {
   return { venta: creada, usos }
 }
 
+// GET /api/ventas — reporte completo de ventas (docs/07: solo Administrador).
+// Filtros opcionales: rango de fecha (fechaDesde/fechaHasta), diaOperativoId y
+// metodoPago. Cada venta incluye sus productos congelados, el usuario que la
+// registró y su Dia_Operativo.
+export const listarVentas = asyncHandler(async (req, res) => {
+  const { fechaDesde, fechaHasta, diaOperativoId, metodoPago } = req.query
+  const where = {}
+
+  if (fechaDesde !== undefined) {
+    const d = new Date(fechaDesde)
+    if (Number.isNaN(d.getTime())) throw new HttpError(400, 'fechaDesde inválida (ISO 8601)')
+    where.fechaHora = { ...(where.fechaHora ?? {}), gte: d }
+  }
+  if (fechaHasta !== undefined) {
+    const d = new Date(fechaHasta)
+    if (Number.isNaN(d.getTime())) throw new HttpError(400, 'fechaHasta inválida (ISO 8601)')
+    where.fechaHora = { ...(where.fechaHora ?? {}), lte: d }
+  }
+  if (diaOperativoId !== undefined) {
+    where.diaOperativoId = Number(diaOperativoId)
+  }
+  if (metodoPago !== undefined) {
+    if (!esEnumValido(metodoPago, METODOS_PAGO)) {
+      throw new HttpError(400, 'metodoPago inválido (Efectivo, Tarjeta o Transferencia)')
+    }
+    where.metodoPago = metodoPago
+  }
+
+  const ventas = await prisma.venta.findMany({
+    where,
+    orderBy: { fechaHora: 'desc' },
+    include: {
+      productos: {
+        include: {
+          producto: { select: { id: true, nombre: true } },
+          combo: { select: { id: true, nombre: true } },
+          mitadYMitad: true,
+          modificadores: { include: { modificador: { select: { id: true, nombre: true } } } },
+        },
+      },
+      usuario: { select: { id: true, tipo: true, nombre: true, usuario: true } },
+      diaOperativo: { select: { id: true, estado: true, fechaApertura: true } },
+    },
+  })
+  res.json(ventas)
+})
+
+// GET /api/ventas/no-cobrar — reporte de auditoría de consumo interno
+// (docs/04 "Lógica: Consumo interno" y docs/07: solo Administrador). Lista
+// SOLO las Venta con no_cobrar=true mostrando producto, costo congelado,
+// usuario que la marcó y hora.
+export const reporteNoCobrar = asyncHandler(async (_req, res) => {
+  const ventas = await prisma.venta.findMany({
+    where: { noCobrar: true },
+    orderBy: { fechaHora: 'desc' },
+    include: {
+      productos: {
+        include: {
+          producto: { select: { id: true, nombre: true } },
+          combo: { select: { id: true, nombre: true } },
+        },
+      },
+      usuario: { select: { id: true, tipo: true, nombre: true, usuario: true } },
+      diaOperativo: { select: { id: true, estado: true } },
+    },
+  })
+
+  res.json(
+    ventas.map((v) => ({
+      id: v.id,
+      fechaHora: v.fechaHora,
+      total: v.total,
+      usuario: {
+        id: v.usuario.id,
+        tipo: v.usuario.tipo,
+        nombre: v.usuario.nombre,
+        usuario: v.usuario.usuario,
+      },
+      diaOperativoId: v.diaOperativoId,
+      pedidoId: v.pedidoId,
+      productos: v.productos.map((vp) => ({
+        producto: vp.producto?.nombre ?? (vp.combo ? `Combo: ${vp.combo.nombre}` : null),
+        costo: vp.precioCongelado,
+        cantidad: vp.cantidad,
+      })),
+    }))
+  )
+})
+
 export const crearVenta = asyncHandler(async (req, res) => {
   // Toda Venta se asocia SIEMPRE al Dia_Operativo en estado Abierto
   // (docs/04, regla crítica).

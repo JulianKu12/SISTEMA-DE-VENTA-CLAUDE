@@ -455,11 +455,16 @@ async function regresarInventarioDePedido(tx, pedido) {
 
 export const cambiarEstadoPreparacion = asyncHandler(async (req, res) => {
   const { id } = req.params
-  const { estadoPreparacion, repartidorId, regresaAInventario } = req.body
+  const { estadoPreparacion, repartidorId, regresaAInventario, noCobrar } = req.body
 
   if (!esEnumValido(estadoPreparacion, ESTADOS_PREPARACION)) {
     throw new HttpError(400, 'estadoPreparacion inválido')
   }
+  if (noCobrar !== undefined && typeof noCobrar !== 'boolean') {
+    throw new HttpError(400, 'noCobrar debe ser un booleano')
+  }
+
+  const usuarioId = resolverUsuario(req)
 
   const resultado = await prisma.$transaction(async (tx) => {
     const pedido = await tx.pedido.findUnique({ where: { id: Number(id) } })
@@ -512,10 +517,49 @@ export const cambiarEstadoPreparacion = asyncHandler(async (req, res) => {
       }
     }
 
+    // Repartidor marca "No cobrar" en su entrega (docs/06 y docs/07): al pasar
+    // a Entregado con no_cobrar=true se marca el Pedido y se dispara en el
+    // MISMO momento la generación de la Venta ya como no_cobrar=true (sin
+    // requerir metodo_pago ni que un Administrador ejecute aparte el cambio de
+    // estado_pago).
+    let venta = null
+    if (estadoPreparacion === 'Entregado' && noCobrar === true) {
+      if (pedido.ventaId) {
+        throw new HttpError(400, 'El pedido ya tiene una Venta generada; no se puede marcar como "No cobrar"')
+      }
+      const dia = await tx.dia_Operativo.findFirst({ where: { estado: 'Abierto' } })
+      if (!dia) {
+        throw new HttpError(
+          409,
+          'No hay una caja abierta (Dia_Operativo Abierto). Abre la caja para registrar el "No cobrar".'
+        )
+      }
+      const r = await ejecutarVenta(tx, {
+        productos: await productosDesdePedido(tx, pedido),
+        metodoPago: 'Efectivo',
+        noCobrar: true,
+        pedidoId: pedido.id,
+        // no_cobrar omite costo_envio y cambio_a_llevar (docs/06): el total del
+        // pedido ya se calculó sin ellos, así que aquí no se suma nada.
+        costoEnvio: 0,
+        usuarioId,
+        diaOperativoId: dia.id,
+      })
+      if (r.conflicto) {
+        const e = new HttpError(409, `No se pudo registrar el "No cobrar": ${r.mensaje}`)
+        e.faltantes = r.faltantes
+        throw e
+      }
+      venta = r.venta
+      data.noCobrar = true
+      data.estadoPago = 'Pagado'
+    }
+
     await tx.pedido.update({ where: { id: pedido.id }, data })
     return {
       pedido: await tx.pedido.findUnique({ where: { id: pedido.id }, include: includePedido }),
       movimientosRegreso,
+      venta,
     }
   })
 
@@ -523,6 +567,9 @@ export const cambiarEstadoPreparacion = asyncHandler(async (req, res) => {
     mensaje: 'Estado de preparación actualizado',
     pedido: resultado.pedido,
     movimientosCancelacionRegreso: resultado.movimientosRegreso,
+    ...(resultado.venta
+      ? { mensajeVenta: 'Venta generada como "No cobrar" automáticamente al marcar Entregado.', venta: resultado.venta }
+      : {}),
   })
 })
 

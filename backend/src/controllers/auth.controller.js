@@ -1,3 +1,4 @@
+import bcrypt from 'bcrypt'
 import prisma from '../models/prisma.js'
 import { asyncHandler } from '../utils/asyncHandler.js'
 import { HttpError } from '../utils/httpError.js'
@@ -14,7 +15,13 @@ export const login = asyncHandler(async (req, res) => {
   }
 
   const cuenta = await prisma.usuario.findUnique({ where: { usuario } })
-  if (!cuenta || cuenta.contraseña !== contraseña) {
+  // Las contraseñas se guardan hasheadas con bcrypt (nunca en texto plano).
+  // `bcrypt.compare` es a prueba de "timing attack" y reutiliza los hashes
+  // viejos (sin prefijo bcrypt) fallando la comparación.
+  const hashValido =
+    cuenta?.contraseña?.startsWith('$2') &&
+    (await bcrypt.compare(contraseña, cuenta.contraseña))
+  if (!cuenta || !hashValido) {
     throw new HttpError(401, 'Credenciales inválidas')
   }
 

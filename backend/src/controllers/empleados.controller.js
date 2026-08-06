@@ -1,3 +1,4 @@
+import bcrypt from 'bcrypt'
 import prisma from '../models/prisma.js'
 import { asyncHandler } from '../utils/asyncHandler.js'
 import { HttpError } from '../utils/httpError.js'
@@ -48,7 +49,12 @@ export const crear = asyncHandler(async (req, res) => {
 
   const resultado = await prisma.$transaction(async (tx) => {
     const cuenta = await tx.usuario.create({
-      data: { tipo: 'Repartidor', nombre: nombre.trim(), usuario: usuario.trim(), contraseña },
+      data: {
+        tipo: 'Repartidor',
+        nombre: nombre.trim(),
+        usuario: usuario.trim(),
+        contraseña: await bcrypt.hash(contraseña, 10),
+      },
     })
     const empleado = await tx.empleado.create({
       data: {
@@ -99,7 +105,7 @@ export const actualizar = asyncHandler(async (req, res) => {
     if (('usuario' in req.body || 'contraseña' in req.body) && existente.usuarioId) {
       const dataUsuario = {}
       if ('usuario' in req.body) dataUsuario.usuario = req.body.usuario?.trim()
-      if ('contraseña' in req.body) dataUsuario.contraseña = req.body.contraseña
+      if ('contraseña' in req.body) dataUsuario.contraseña = await bcrypt.hash(req.body.contraseña, 10)
       try {
         await tx.usuario.update({ where: { id: existente.usuarioId }, data: dataUsuario })
       } catch (e) {
