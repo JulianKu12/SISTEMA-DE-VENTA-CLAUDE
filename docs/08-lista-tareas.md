@@ -4,18 +4,20 @@
 
 ## FASE 0: Diseño
 - [ ] Diseñar wireframes de cada pantalla (en Canva, por cuenta del desarrollador)
-- [ ] Definir estilo visual básico (colores, tipografía, tamaño de botones táctiles — ver `02-stack-tecnico.md`)
-- [ ] Diseñar el flujo de navegación entre pantallas
+- [x] Definir estilo visual básico (estilo Cupertino: paleta de colores, tipografía y componentes táctiles en `frontend/src/index.css` — ver `02-stack-tecnico.md` y `09-handoff-frontend-login.md`)
+- [x] Diseñar el flujo de navegación entre pantallas (rutas base con react-router: `/login` y `/` con rutas protegidas — ver `09-handoff-frontend-login.md`)
 - [x] Diseñar el diagrama completo de base de datos (cubierto en `03`, `04`, `05`, `06`, `07`)
 - [x] Definir el stack tecnológico (`02-stack-tecnico.md`)
 
 ## FASE 1: Preparación técnica
 - [x] Instalar herramientas de desarrollo (Node.js, Git, VS Code)
 - [x] Crear repositorio Git y conectarlo con GitHub
-- [ ] Crear estructura de carpetas del proyecto (frontend/backend) — ver `02-stack-tecnico.md`, "Instrucción para el primer prompt de OpenCode"
-- [ ] Configurar la base de datos local (Prisma + SQLite, schema basado en `03`, `04`, `05`, `06`, `07`)
+- [x] Crear estructura de carpetas del proyecto (frontend/backend) — monorepo con npm workspaces
+- [x] Configurar la base de datos local (Prisma + SQLite, schema completo basado en `03`, `04`, `05`, `06`, `07`)
 
 ## FASE 2: Núcleo del sistema (meta: 15 días — MVP vendible)
+
+> **Nota de estado (actualizado):** todo el backend de las Fases 2-6 (modelos Prisma, rutas y controladores Express, pruebas) YA está implementado y probado. Las casillas sin marcar corresponden ahora únicamente a las **pantallas del frontend**. La pantalla de Login ya está construida (ver `09-handoff-frontend-login.md`).
 
 ### Ingredientes (lógica en `03-modulo-productos.md`)
 - [ ] Crear tabla de ingredientes (nombre, unidad, stock, alerta mínima)
@@ -181,6 +183,10 @@
 
 - ✅ Toda la planeación de negocio y lógica de producto: cerrada (8 rondas de revisión de errores/casos especiales)
 - ✅ Stack tecnológico definido (`02-stack-tecnico.md`)
-- ✅ Repositorio Git creado y conectado a GitHub (`https://github.com/JulianKu12/Sistema-de-ventas`), primer commit subido
+- ✅ Repositorio Git creado y conectado a GitHub (`https://github.com/JulianKu12/Sistema-de-ventas`)
 - ✅ Entorno de desarrollo local configurado (proyecto fuera de OneDrive para evitar conflictos)
-- ⏳ **Siguiente paso inmediato:** Crear estructura base del proyecto (Fase 1) usando el prompt descrito en `02-stack-tecnico.md`
+- ✅ Estructura base del proyecto: monorepo frontend/backend con npm workspaces (Fase 1)
+- ✅ Base de datos local configurada: Prisma + SQLite con el schema completo de los módulos 03-07 (Fase 1)
+- ✅ Backend completo: rutas y controladores de los módulos 03-07 (productos, ventas/inventario, caja/gastos/devoluciones, pedidos/clientes, roles), con autenticación JWT
+- ✅ Estilo visual Cupertino definido y pantalla de Login construida (ver `09-handoff-frontend-login.md`)
+- ⏳ **Siguiente paso:** construir el panel de pedidos (Punto de Venta) reemplazando la pantalla "Bienvenido" — pendiente de confirmar si va antes la gestión de catálogo (ingredientes/productos/modificadores)
