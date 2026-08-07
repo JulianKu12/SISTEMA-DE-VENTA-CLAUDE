@@ -117,6 +117,7 @@ export const crearPedido = asyncHandler(async (req, res) => {
     clienteId,
     nombreClienteLibre,
     referenciaId,
+    referenciaLibre,
     productos,
     metodoPago,
     montoReferenciaPago,
@@ -135,6 +136,29 @@ export const crearPedido = asyncHandler(async (req, res) => {
   }
   if (referenciaId != null && tipo !== 'A_domicilio') {
     throw new HttpError(400, 'referenciaId solo aplica a pedidos A_domicilio')
+  }
+  const tieneRefLibre = typeof referenciaLibre === 'string' && referenciaLibre.trim().length > 0
+  if (tieneRefLibre && tipo !== 'A_domicilio') {
+    throw new HttpError(400, 'referenciaLibre solo aplica a pedidos A_domicilio')
+  }
+  // Regla de referencia de entrega (docs/06): un pedido A_domicilio requiere
+  // EXACTAMENTE una referencia: referenciaId (cliente registrado con una
+  // referencia guardada) o referenciaLibre (texto, cliente no registrado o
+  // dirección de una sola vez). Nunca ambas, nunca ninguna.
+  if (tipo === 'A_domicilio') {
+    const tieneRefId = referenciaId != null
+    if (tieneRefId && tieneRefLibre) {
+      throw new HttpError(
+        400,
+        'Un pedido A_domicilio recibe referenciaId o referenciaLibre, no ambos'
+      )
+    }
+    if (!tieneRefId && !tieneRefLibre) {
+      throw new HttpError(
+        400,
+        'Un pedido A_domicilio requiere una referencia de entrega: referenciaId (cliente registrado) o referenciaLibre (texto)'
+      )
+    }
   }
   const montoResuelto = validarMetodoPago(tipo, noCobrar ? 'Efectivo' : metodoPago)
 
@@ -199,6 +223,7 @@ export const crearPedido = asyncHandler(async (req, res) => {
         clienteId: clienteId != null ? Number(clienteId) : null,
         nombreClienteLibre: nombreClienteLibre ?? null,
         referenciaId: referenciaId != null ? Number(referenciaId) : null,
+        referenciaLibre: tieneRefLibre ? referenciaLibre.trim() : null,
         costoEnvio,
         repartidorId: null,
         metodoPago: noCobrar ? 'Efectivo' : montoResuelto,

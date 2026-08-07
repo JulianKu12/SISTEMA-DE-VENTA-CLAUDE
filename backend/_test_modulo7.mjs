@@ -69,6 +69,7 @@ try {
   console.log('== Validacion de monto_referencia_pago contra opciones ==')
   const montoInvalido = await req('POST', '/api/pedidos', {
     tipo: 'A_domicilio', origen: 'Telefono', nombreClienteLibre: 'Cliente Z',
+    referenciaLibre: 'Dirección Z',
     productos: [{ productoId: coca.id, cantidad: 1 }],
     metodoPago: 'Efectivo', montoReferenciaPago: 999,
   }, tokenAdmin)
@@ -120,6 +121,7 @@ try {
   console.log('== Repartidor con "No cobrar" en pedido a domicilio ==')
   const pedidoNoCobrar = await req('POST', '/api/pedidos', {
     tipo: 'A_domicilio', origen: 'Telefono', nombreClienteLibre: 'Cliente',
+    referenciaLibre: 'Dirección NC',
     productos: [{ productoId: coca.id, cantidad: 1 }], noCobrar: true,
   }, tokenRep)
   ok(pedidoNoCobrar.status === 201 && pedidoNoCobrar.data.noCobrar === true, 'repartidor -> pedido A_domicilio No cobrar 201')
@@ -127,6 +129,7 @@ try {
   console.log('== Pedido asignado al repartidor (admin marca Enviado) ==')
   const p = await req('POST', '/api/pedidos', {
     tipo: 'A_domicilio', origen: 'Telefono', nombreClienteLibre: 'Cliente X',
+    referenciaLibre: 'Dirección Cliente X',
     productos: [{ productoId: coca.id, cantidad: 1 }],
     metodoPago: 'Efectivo', montoReferenciaPago: 20,
   }, tokenAdmin)
@@ -174,6 +177,7 @@ try {
   console.log('== Repartidor marca "No cobrar" al entregar ==')
   const pedidoEntregaNC = await req('POST', '/api/pedidos', {
     tipo: 'A_domicilio', origen: 'Telefono', nombreClienteLibre: 'NC Entrega',
+    referenciaLibre: 'Dirección NC Entrega',
     productos: [{ productoId: coca.id, cantidad: 1 }], noCobrar: true,
   }, tokenRep)
   ok(pedidoEntregaNC.status === 201 && pedidoEntregaNC.data.noCobrar === true && pedidoEntregaNC.data.estadoPago === 'Pendiente_pago' && pedidoEntregaNC.data.venta === null, 'repartidor crea pedido No cobrar (Pendiente_pago, sin venta aún)')
@@ -189,6 +193,7 @@ try {
   // Entregado SIN noCobrar en un pedido Pendiente_pago: no genera venta.
   const pedidoSinNC = await req('POST', '/api/pedidos', {
     tipo: 'A_domicilio', origen: 'Telefono', nombreClienteLibre: 'Sin NC',
+    referenciaLibre: 'Dirección Sin NC',
     productos: [{ productoId: coca.id, cantidad: 1 }],
     metodoPago: 'Efectivo', montoReferenciaPago: 20,
   }, tokenAdmin)

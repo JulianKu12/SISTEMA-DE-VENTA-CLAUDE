@@ -426,6 +426,7 @@ model Pedido {
   clienteId           Int?
   nombreClienteLibre  String?
   referenciaId        Int?
+  referenciaLibre     String?
   costoEnvio          Float?
   repartidorId        Int?
   metodoPago          MetodoPago        @default(Efectivo)

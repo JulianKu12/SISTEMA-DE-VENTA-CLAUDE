@@ -118,6 +118,7 @@ try {
     origen: 'Mostrador',
     clienteId: null,
     nombreClienteLibre: 'María',
+    referenciaLibre: 'calle falsa 123, junto al parque',
     productos: [{ productoId: coca.id, cantidad: 1 }],
     metodoPago: 'Efectivo',
     montoReferenciaPago: 100,
@@ -125,6 +126,8 @@ try {
   })
   ok(p2.status === 201 && p2.data.estadoPago === 'Pendiente_pago', 'Mostrador+A_domicilio -> Pendiente_pago')
   ok(p2.data.costoEnvio === 5 && p2.data.total === 20, 'costo_envio 5 aplicado (total 20)')
+  ok(p2.data.referenciaLibre === 'calle falsa 123, junto al parque', 'referencia libre (texto) almacenada en el pedido')
+  ok(p2.data.referenciaId === null, 'sin referenciaId (cliente no registrado)')
   ok(p2.data.venta === null, 'aun sin venta')
   ok((await stockProducto(coca.id)) === 8, 'stock intacto mientras no se paga')
 
@@ -145,12 +148,14 @@ try {
     tipo: 'A_domicilio',
     origen: 'Telefono',
     nombreClienteLibre: 'Luis',
+    referenciaLibre: 'Av. Siempre Viva 742',
     productos: [{ productoId: coca.id, cantidad: 1 }],
     metodoPago: 'Transferencia',
     usuarioId: admin.id,
   })
   ok(p4.status === 201 && p4.data.estadoPago === 'Pendiente_pago', 'Telefono+A_domicilio -> Pendiente_pago')
   ok(p4.data.total === 20 && p4.data.costoEnvio === 5, 'total 20 con envio')
+  ok(p4.data.referenciaLibre === 'Av. Siempre Viva 742', 'referencia libre almacenada (Transferencia)')
 
   console.log('== Validaciones de pedido ==')
   const malMetodo = await req('POST', '/api/pedidos', {
@@ -165,6 +170,27 @@ try {
     metodoPago: 'Efectivo', montoReferenciaPago: 100, usuarioId: admin.id,
   })
   ok(malRef.status === 400 && /referenciaId/i.test(malRef.data.message), 'referenciaId solo para A_domicilio -> 400')
+
+  console.log('== Referencia de entrega en A_domicilio (exactamente una) ==')
+  const sinRefDomicilio = await req('POST', '/api/pedidos', {
+    tipo: 'A_domicilio', origen: 'Telefono', nombreClienteLibre: 'Sin Ref',
+    productos: [{ productoId: coca.id, cantidad: 1 }],
+    metodoPago: 'Efectivo', montoReferenciaPago: 100, usuarioId: admin.id,
+  })
+  ok(sinRefDomicilio.status === 400 && /referenciaLibre/i.test(sinRefDomicilio.data.message), 'A_domicilio sin ninguna referencia -> 400 con error claro')
+  const ambasRefs = await req('POST', '/api/pedidos', {
+    tipo: 'A_domicilio', origen: 'Telefono', nombreClienteLibre: 'Ambas',
+    referenciaId: 1, referenciaLibre: 'calle x',
+    productos: [{ productoId: coca.id, cantidad: 1 }],
+    metodoPago: 'Efectivo', montoReferenciaPago: 100, usuarioId: admin.id,
+  })
+  ok(ambasRefs.status === 400 && /no ambos/i.test(ambasRefs.data.message), 'A_domicilio con referenciaId Y referenciaLibre -> 400 (no ambos)')
+  const refLibreRecoger = await req('POST', '/api/pedidos', {
+    tipo: 'Para_recoger', origen: 'Mostrador', referenciaLibre: 'calle x',
+    productos: [{ productoId: coca.id, cantidad: 1 }],
+    metodoPago: 'Efectivo', montoReferenciaPago: 100, usuarioId: admin.id,
+  })
+  ok(refLibreRecoger.status === 400 && /referenciaLibre/i.test(refLibreRecoger.data.message), 'referenciaLibre solo para A_domicilio -> 400')
 
   console.log('== Edicion de pedido (P3) ==')
   const det3 = await req('GET', `/api/pedidos/${p3.data.id}/detalle`)
