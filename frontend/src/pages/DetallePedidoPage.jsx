@@ -1,0 +1,845 @@
+import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useNavigate, useParams } from 'react-router-dom'
+import Button from '../components/ui/Button'
+import { obtenerCombos, obtenerProductos } from '../services/catalogo'
+import {
+  obtenerPedido,
+  cambiarEstadoPago,
+  cambiarEstadoPreparacion,
+  editarPedido,
+  obtenerRepartidoresDisponibles,
+} from '../services/pedidos'
+
+const CONFIG_ESTADOS = {
+  Pendiente: {
+    etiqueta: 'Pendiente',
+    punto: 'bg-amber-500',
+    fondo: 'bg-amber-500/10',
+    texto: 'text-amber-700',
+  },
+  En_preparacion: {
+    etiqueta: 'En preparación',
+    punto: 'bg-blue-500',
+    fondo: 'bg-blue-500/10',
+    texto: 'text-blue-700',
+  },
+  Enviado: {
+    etiqueta: 'Enviado',
+    punto: 'bg-purple-500',
+    fondo: 'bg-purple-500/10',
+    texto: 'text-purple-700',
+  },
+  Entregado: {
+    etiqueta: 'Entregado',
+    punto: 'bg-green-500',
+    fondo: 'bg-green-500/10',
+    texto: 'text-green-700',
+  },
+  Cancelado: {
+    etiqueta: 'Cancelado',
+    punto: 'bg-gray-400',
+    fondo: 'bg-muted/10',
+    texto: 'text-muted',
+  },
+}
+
+const CONFIG_PAGO = {
+  Pagado: { etiqueta: 'Pagado', fondo: 'bg-green-500/10', texto: 'text-green-700' },
+  Pendiente_pago: {
+    etiqueta: 'Pendiente de pago',
+    fondo: 'bg-amber-500/10',
+    texto: 'text-amber-700',
+  },
+}
+
+const ETIQUETA_TIPO = {
+  Para_recoger: 'Para recoger',
+  A_domicilio: 'A domicilio',
+}
+
+const ETIQUETA_ORIGEN = {
+  Mostrador: 'Mostrador',
+  Telefono: 'Por teléfono',
+}
+
+function formatearMonto(monto) {
+  if (monto == null) return '—'
+  return monto.toLocaleString('es-MX', { style: 'currency', currency: 'MXN' })
+}
+
+function formatHora(iso) {
+  const fecha = new Date(iso)
+  const hora = fecha.toLocaleTimeString('es-MX', {
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false,
+  })
+  const dia = fecha.toLocaleDateString('es-MX', { day: 'numeric', month: 'short' })
+  return `${hora} · ${dia}`
+}
+
+function IconoFlechaIzquierda() {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      className="h-5 w-5"
+      aria-hidden="true"
+    >
+      <path d="M15.75 19.5 8.25 12l7.5-7.5" />
+    </svg>
+  )
+}
+
+function IconoBasura() {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.8"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      className="h-4 w-4"
+      aria-hidden="true"
+    >
+      <path d="m14.74 9-.346 9m-4.788 0L9.26 9m9.968-3.21c.342.052.682.107 1.022.166m-1.022-.165L18.16 19.673a2.25 2.25 0 0 1-2.244 2.077H8.084a2.25 2.25 0 0 1-2.244-2.077L4.772 5.79m14.456 0a48.108 48.108 0 0 0-3.478-0.397m-12 .562c.34-.059.68-.114 1.022-.165m0 0c.035-.167.08-.332.136-.497C7.51 4.03 8.392 3 9.5 3h5c1.108 0 1.99 1.03 2.17 2.528v.062c.056.165.101.33.136.497M3.75 6.747c.34-.059.68-.114 1.022-.165" />
+    </svg>
+  )
+}
+
+function EtiquetaSeccion({ children }) {
+  return <h2 className="mb-3 text-sm font-bold uppercase tracking-wide text-muted">{children}</h2>
+}
+
+function FilaInfo({ etiqueta, valor }) {
+  return (
+    <div className="flex items-start justify-between gap-4 py-2.5">
+      <span className="shrink-0 text-sm text-muted">{etiqueta}</span>
+      <span className="min-w-0 text-right text-sm font-semibold text-ink">{valor}</span>
+    </div>
+  )
+}
+
+function construirLineas(pedido) {
+  const grupos = new Map()
+  const normales = []
+  for (const pp of pedido.productos || []) {
+    if (pp.comboId) {
+      if (!grupos.has(pp.comboId)) {
+        grupos.set(pp.comboId, {
+          tipo: 'combo',
+          comboId: pp.comboId,
+          nombre: pp.combo?.nombre || 'Combo',
+          comboPrecioCongelado: pp.comboPrecioCongelado,
+          filas: [],
+          pedidoProductoIds: [],
+        })
+      }
+      grupos.get(pp.comboId).filas.push(pp)
+      grupos.get(pp.comboId).pedidoProductoIds.push(pp.id)
+    } else {
+      const conMods = (pp.modificadores || []).reduce((acc, m) => acc + m.costoAplicado, 0)
+      normales.push({
+        tipo: 'producto',
+        pedidoProductoId: pp.id,
+        nombre: pp.producto?.nombre || 'Producto',
+        cantidad: pp.cantidad,
+        precioUnitario: pp.precioCongelado + conMods,
+        esMitad: pp.esMitadYMitad,
+        mitad: pp.mitadYMitad,
+        modificadores: pp.modificadores || [],
+        subtotal: (pp.precioCongelado + conMods) * pp.cantidad,
+      })
+    }
+  }
+  const combos = [...grupos.values()].map((g) => ({
+    ...g,
+    cantidad: g.filas[0]?.cantidad,
+    subtotal: (g.comboPrecioCongelado ?? 0) * (g.filas[0]?.cantidad || 0),
+  }))
+  return [...combos, ...normales]
+}
+
+function ModalRepartidor({ disponibles, onSeleccionar, onCancelar }) {
+  const [seleccionado, setSeleccionado] = useState(disponibles[0]?.id ?? null)
+
+  useEffect(() => {
+    const overflowAnterior = document.body.style.overflow
+    document.body.style.overflow = 'hidden'
+    const cerrarConEsc = (e) => {
+      if (e.key === 'Escape') onCancelar()
+    }
+    window.addEventListener('keydown', cerrarConEsc)
+    return () => {
+      document.body.style.overflow = overflowAnterior
+      window.removeEventListener('keydown', cerrarConEsc)
+    }
+  }, [onCancelar])
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-end justify-center" role="dialog" aria-modal="true">
+      <div
+        className="absolute inset-0 animate-[fade-in_200ms_ease-out] bg-ink/40 backdrop-blur-sm"
+        onClick={onCancelar}
+      />
+      <div className="relative max-h-[88vh] w-full max-w-lg animate-[sheet-up_280ms_ease-out] overflow-y-auto rounded-t-3xl bg-card px-6 pb-6 pt-4 shadow-card">
+        <div className="mx-auto mb-4 h-1.5 w-10 rounded-full bg-muted/30" />
+        <h2 className="text-xl font-bold text-ink">Asignar repartidor</h2>
+        <p className="mt-1 text-sm text-muted">
+          El pedido a domicilio necesita un repartidor disponible para pasar a Enviado.
+        </p>
+
+        {disponibles.length === 0 ? (
+          <p className="mt-4 rounded-2xl bg-surface px-4 py-6 text-center text-sm text-muted">
+            No hay repartidores disponibles en este momento. Elige cómo proceder.
+          </p>
+        ) : (
+          <div className="mt-4 space-y-2">
+            {disponibles.map((r) => (
+              <button
+                key={r.id}
+                type="button"
+                onClick={() => setSeleccionado(r.id)}
+                aria-pressed={seleccionado === r.id}
+                className={`w-full rounded-2xl px-4 py-3 text-left transition ${
+                  seleccionado === r.id ? 'bg-accent/10' : 'bg-surface'
+                }`}
+              >
+                <span className="block text-sm font-semibold text-ink">{r.nombre}</span>
+              </button>
+            ))}
+          </div>
+        )}
+
+        <div className="mt-6 flex items-center gap-3">
+          <Button variant="secondary" size="md" className="flex-1" onClick={onCancelar}>
+            Cancelar
+          </Button>
+          <Button
+            size="md"
+            className="flex-1"
+            disabled={disponibles.length === 0 || seleccionado == null}
+            onClick={() => onSeleccionar(Number(seleccionado))}
+          >
+            Enviar
+          </Button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function ModalAgregar({ productos, combos, onAgregar, onCancelar }) {
+  const [tipo, setTipo] = useState('producto')
+  const [seleccionId, setSeleccionId] = useState(null)
+  const [cantidad, setCantidad] = useState(1)
+
+  useEffect(() => {
+    const overflowAnterior = document.body.style.overflow
+    document.body.style.overflow = 'hidden'
+    const cerrarConEsc = (e) => {
+      if (e.key === 'Escape') onCancelar()
+    }
+    window.addEventListener('keydown', cerrarConEsc)
+    return () => {
+      document.body.style.overflow = overflowAnterior
+      window.removeEventListener('keydown', cerrarConEsc)
+    }
+  }, [onCancelar])
+
+  const opciones = tipo === 'producto' ? productos : combos
+  const seleccionado = opciones?.find((o) => o.id === seleccionId)
+
+  const confirmar = () => {
+    if (!seleccionado) return
+    if (tipo === 'producto') onAgregar({ productoId: seleccionado.id, cantidad })
+    else onAgregar({ comboId: seleccionado.id, cantidad })
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-end justify-center" role="dialog" aria-modal="true">
+      <div
+        className="absolute inset-0 animate-[fade-in_200ms_ease-out] bg-ink/40 backdrop-blur-sm"
+        onClick={onCancelar}
+      />
+      <div className="relative max-h-[88vh] w-full max-w-lg animate-[sheet-up_280ms_ease-out] overflow-y-auto rounded-t-3xl bg-card px-6 pb-6 pt-4 shadow-card">
+        <div className="mx-auto mb-4 h-1.5 w-10 rounded-full bg-muted/30" />
+        <h2 className="text-xl font-bold text-ink">Agregar al pedido</h2>
+
+        <div className="mt-4 grid grid-cols-2 gap-1 rounded-full bg-input p-1">
+          {[
+            { id: 'producto', etiqueta: 'Producto' },
+            { id: 'combo', etiqueta: 'Combo' },
+          ].map((op) => {
+            const activo = tipo === op.id
+            return (
+              <button
+                key={op.id}
+                type="button"
+                onClick={() => {
+                  setTipo(op.id)
+                  setSeleccionId(null)
+                }}
+                aria-pressed={activo}
+                className={`rounded-full px-3 py-2.5 text-sm font-semibold transition ${
+                  activo ? 'bg-card text-accent shadow-card' : 'text-muted hover:text-ink'
+                }`}
+              >
+                {op.etiqueta}
+              </button>
+            )
+          })}
+        </div>
+
+        <div className="mt-4">
+          <label>
+            <span className="mb-1 block text-xs font-medium text-muted">
+              {tipo === 'producto' ? 'Producto' : 'Combo'}
+            </span>
+            <select
+              value={seleccionId ?? ''}
+              onChange={(e) => setSeleccionId(e.target.value ? Number(e.target.value) : null)}
+              className="w-full rounded-2xl border-none bg-input px-4 py-3 text-base text-ink outline-none transition focus:ring-2 focus:ring-accent/40"
+            >
+              <option value="" disabled>
+                Elige uno
+              </option>
+              {(opciones || []).map((o) => (
+                <option key={o.id} value={o.id}>
+                  {o.nombre} — {formatearMonto(tipo === 'producto' ? o.precio : o.precioEspecial)}
+                </option>
+              ))}
+            </select>
+          </label>
+        </div>
+
+        <div className="mt-4">
+          <span className="mb-1 block text-xs font-medium text-muted">Cantidad</span>
+          <div className="flex items-center gap-3">
+            <button
+              type="button"
+              onClick={() => setCantidad((c) => Math.max(1, c - 1))}
+              disabled={cantidad <= 1}
+              aria-label="Disminuir cantidad"
+              className="flex h-12 w-12 items-center justify-center rounded-2xl bg-input text-ink transition active:scale-95 disabled:opacity-40"
+            >
+              -
+            </button>
+            <span className="w-12 text-center text-xl font-bold text-ink">{cantidad}</span>
+            <button
+              type="button"
+              onClick={() => setCantidad((c) => c + 1)}
+              aria-label="Aumentar cantidad"
+              className="flex h-12 w-12 items-center justify-center rounded-2xl bg-accent text-white transition active:scale-95"
+            >
+              +
+            </button>
+          </div>
+        </div>
+
+        <div className="mt-6 flex items-center gap-3">
+          <Button variant="secondary" size="md" className="flex-1" onClick={onCancelar}>
+            Cancelar
+          </Button>
+          <Button size="md" className="flex-1" disabled={!seleccionado} onClick={confirmar}>
+            Agregar
+          </Button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function DetallePedidoPage() {
+  const { id } = useParams()
+  const navigate = useNavigate()
+  const [pedido, setPedido] = useState(null)
+  const [error, setError] = useState('')
+  const [notificacion, setNotificacion] = useState('')
+  const [ocupado, setOcupado] = useState(false)
+  const [modalRepartidor, setModalRepartidor] = useState(false)
+  const [repartidores, setRepartidores] = useState([])
+  const [modalAgregar, setModalAgregar] = useState(false)
+  const [edicionActiva, setEdicionActiva] = useState(false)
+  const [productos, setProductos] = useState(null)
+  const [combos, setCombos] = useState(null)
+
+  const cargar = useCallback(async () => {
+    setError('')
+    setNotificacion('')
+    try {
+      const datos = await obtenerPedido(id)
+      setPedido(datos)
+    } catch (err) {
+      setError(err.message)
+    }
+  }, [id])
+
+  useEffect(() => {
+    cargar()
+  }, [cargar])
+
+  const lineas = useMemo(() => (pedido ? construirLineas(pedido) : []), [pedido])
+
+  const estado = pedido ? CONFIG_ESTADOS[pedido.estadoPreparacion] || CONFIG_ESTADOS.Cancelado : null
+  const pago = pedido ? CONFIG_PAGO[pedido.estadoPago] || CONFIG_PAGO.Pendiente_pago : null
+
+  const enPendiente = pedido?.estadoPreparacion === 'Pendiente'
+  const enPreparacion = pedido?.estadoPreparacion === 'En_preparacion'
+  const enEnviado = pedido?.estadoPreparacion === 'Enviado'
+  const enEntregado = pedido?.estadoPreparacion === 'Entregado'
+  const editable = enPendiente || enPreparacion
+  const esDomicilio = pedido?.tipo === 'A_domicilio'
+  const pendienteDePago = pedido?.estadoPago === 'Pendiente_pago'
+  const cancelable = enPendiente || enPreparacion || enEnviado
+
+  const correr = async (tarea, mensajeExito) => {
+    if (ocupado) return
+    setOcupado(true)
+    setError('')
+    setNotificacion('')
+    try {
+      const res = await tarea()
+      if (res?.pedido) setPedido(res.pedido)
+      if (mensajeExito) setNotificacion(mensajeExito)
+      return res
+    } catch (err) {
+      setError(err.message)
+      return null
+    } finally {
+      setOcupado(false)
+    }
+  }
+
+  const pausar = () => {
+    correr(
+      () => cambiarEstadoPreparacion(id, { estadoPreparacion: 'En_preparacion' }),
+      'Pedido en preparación',
+    )
+  }
+
+  const marcarEnviado = () => {
+    if (pedido.repartidor) {
+      correr(
+        () =>
+          cambiarEstadoPreparacion(id, {
+            estadoPreparacion: 'Enviado',
+            repartidorId: pedido.repartidor.id,
+          }),
+        'Pedido enviado',
+      )
+    } else {
+      setError('')
+      setNotificacion('')
+      obtenerRepartidoresDisponibles()
+        .then((disponibles) => {
+          setRepartidores(disponibles)
+          setModalRepartidor(true)
+        })
+        .catch((err) => setError(err.message))
+    }
+  }
+
+  const marcarEntregado = () => {
+    correr(
+      () => cambiarEstadoPreparacion(id, { estadoPreparacion: 'Entregado' }),
+      'Pedido entregado',
+    )
+  }
+
+  const enviarConRepartidor = (repartidorId) => {
+    setModalRepartidor(false)
+    correr(
+      () =>
+        cambiarEstadoPreparacion(id, {
+          estadoPreparacion: 'Enviado',
+          repartidorId,
+        }),
+      'Pedido enviado',
+    )
+  }
+
+  const cancelarPedido = async () => {
+    if (ocupado) return
+    if (!window.confirm(`¿Cancelar el pedido #${pedido.id}?`)) return
+    const regresaAInventario = window.confirm(
+      '¿Los ingredientes se regresan al inventario? (Aceptar = sí se regresan · Cancelar = no se regresan)',
+    )
+    const res = await correr(
+      () =>
+        cambiarEstadoPreparacion(id, {
+          estadoPreparacion: 'Cancelado',
+          regresaAInventario,
+        }),
+      regresaAInventario
+        ? 'Pedido cancelado y regresado a inventario'
+        : 'Pedido cancelado (sin regreso a inventario)',
+    )
+    if (res) setEdicionActiva(false)
+  }
+
+  const abrirAgregar = async () => {
+    setError('')
+    setModalAgregar(true)
+    if (productos === null || combos === null) {
+      try {
+        const [p, c] = await Promise.all([obtenerProductos(), obtenerCombos()])
+        setProductos(p)
+        setCombos(c.filter((combo) => combo.estado === 'Activo'))
+      } catch (err) {
+        setError(err.message)
+      }
+    }
+  }
+
+  const agregarLinea = (item) => {
+    correr(
+      () => editarPedido(id, { agregarProductos: [item] }),
+      'Producto agregado y total recalculado',
+    ).then((res) => {
+      if (res) setEdicionActiva(true)
+    })
+    setModalAgregar(false)
+  }
+
+  const quitarLinea = async (linea) => {
+    if (ocupado) return
+    const regresaAInventario = window.confirm(
+      `¿Regresar "${linea.nombre}" al inventario? (Aceptar = sí se regresa · Cancelar = no se regresa)`,
+    )
+    const ids =
+      linea.tipo === 'combo'
+        ? linea.pedidoProductoIds.map((pedidoProductoId) => ({
+            pedidoProductoId,
+            regresaAInventario,
+          }))
+        : [{ pedidoProductoId: linea.pedidoProductoId, regresaAInventario }]
+    const res = await correr(
+      () => editarPedido(id, { quitarProductos: ids }),
+      'Producto quitado y total recalculado',
+    )
+    if (res && lineas.length === 1) setEdicionActiva(false)
+  }
+
+  const marcarPagado = () => {
+    correr(
+      () => cambiarEstadoPago(id, { estadoPago: 'Pagado' }),
+      'Pedido pagado. Venta generada.',
+    )
+  }
+
+  const nombreCliente = pedido
+    ? pedido.cliente?.nombre || pedido.nombreClienteLibre || 'Sin nombre'
+    : ''
+
+  const referenciaEntrega =
+    pedido?.tipo === 'A_domicilio'
+      ? pedido.referencia?.descripcion || pedido.referenciaLibre || '—'
+      : null
+
+  if (error && !pedido) {
+    return (
+      <main className="min-h-screen bg-surface pb-16">
+        <div className="mx-auto flex max-w-7xl flex-col items-center justify-center gap-4 px-4 py-24 text-center">
+          <p className="font-medium text-danger">{error}</p>
+          <Button variant="secondary" size="md" onClick={cargar}>
+            Reintentar
+          </Button>
+          <button
+            type="button"
+            onClick={() => navigate('/')}
+            className="text-sm font-semibold text-accent"
+          >
+            Volver a pedidos
+          </button>
+        </div>
+      </main>
+    )
+  }
+
+  if (!pedido) {
+    return (
+      <main className="min-h-screen bg-surface pb-16">
+        <div className="flex flex-col items-center justify-center gap-3 py-24 text-muted">
+          <div className="h-8 w-8 animate-spin rounded-full border-2 border-muted/30 border-t-accent" />
+          <p className="text-sm">Cargando pedido…</p>
+        </div>
+      </main>
+    )
+  }
+
+  return (
+    <main className="min-h-screen bg-surface pb-16">
+      <header className="sticky top-0 z-30 border-b border-muted/10 bg-surface/90 backdrop-blur-md">
+        <div className="mx-auto flex max-w-7xl items-center gap-3 px-4 py-4 sm:px-6 lg:px-8">
+          <button
+            type="button"
+            onClick={() => navigate('/')}
+            aria-label="Volver a Pedidos"
+            className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-card text-ink shadow-card transition active:scale-95 focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
+          >
+            <IconoFlechaIzquierda />
+          </button>
+          <h1 className="truncate text-xl font-bold text-ink sm:text-2xl">
+            Pedido #{pedido.id}
+          </h1>
+        </div>
+      </header>
+
+      <div className="mx-auto max-w-5xl space-y-6 px-4 pt-6 sm:px-6 lg:px-8">
+        {error && (
+          <div className="rounded-2xl bg-danger/10 px-4 py-3 text-sm font-medium text-danger">
+            {error}
+          </div>
+        )}
+        {notificacion && (
+          <div className="rounded-2xl bg-green-500/10 px-4 py-3 text-sm font-medium text-green-700">
+            {notificacion}
+          </div>
+        )}
+
+        <section className="rounded-3xl bg-card p-5 shadow-card">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div className="min-w-0">
+              <h2 className="text-2xl font-bold text-ink">{nombreCliente}</h2>
+              <p className="text-sm text-muted">
+                {ETIQUETA_TIPO[pedido.tipo]} · {ETIQUETA_ORIGEN[pedido.origen]} ·{' '}
+                {formatHora(pedido.fechaHoraCreacion)}
+              </p>
+            </div>
+            <div className="flex shrink-0 flex-wrap items-center gap-2">
+              {estado && (
+                <span
+                  className={`inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-semibold ${estado.fondo} ${estado.texto}`}
+                >
+                  <span className={`h-1.5 w-1.5 rounded-full ${estado.punto}`} />
+                  {estado.etiqueta}
+                </span>
+              )}
+              {pago && (
+                <span
+                  className={`inline-flex items-center rounded-full px-2.5 py-1 text-xs font-semibold ${pago.fondo} ${pago.texto}`}
+                >
+                  {pago.etiqueta}
+                </span>
+              )}
+            </div>
+          </div>
+
+          <div className="mt-5 grid gap-x-8 gap-y-1 border-t border-muted/10 pt-2 sm:grid-cols-2">
+            <FilaInfo etiqueta="Cliente" valor={nombreCliente} />
+            <FilaInfo etiqueta="Hora" valor={formatHora(pedido.fechaHoraCreacion)} />
+            <FilaInfo etiqueta="Tipo" valor={ETIQUETA_TIPO[pedido.tipo]} />
+            <FilaInfo etiqueta="Origen" valor={ETIQUETA_ORIGEN[pedido.origen]} />
+            <FilaInfo etiqueta="Método de pago" valor={pedido.noCobrar ? 'No cobrar' : pedido.metodoPago} />
+            <FilaInfo etiqueta="Estado de pago" valor={pago?.etiqueta} />
+
+            {esDomicilio && (
+              <>
+                <FilaInfo etiqueta="Referencia de entrega" valor={referenciaEntrega} />
+                <FilaInfo
+                  etiqueta="Repartidor"
+                  valor={pedido.repartidor?.nombre || 'Sin asignar'}
+                />
+                <FilaInfo etiqueta="Envío" valor={formatearMonto(pedido.costoEnvio)} />
+                <FilaInfo
+                  etiqueta="Cambio a llevar"
+                  valor={formatearMonto(pedido.cambioALlevar)}
+                />
+              </>
+            )}
+          </div>
+        </section>
+
+        <section>
+          <EtiquetaSeccion>Productos y combos</EtiquetaSeccion>
+          <div className="rounded-3xl bg-card shadow-card">
+            <ul className="divide-y divide-muted/10">
+              {lineas.map((linea, idx) => (
+                <li key={idx} className="px-5 py-4">
+                  {linea.tipo === 'combo' ? (
+                    <div className="flex items-start gap-3">
+                      <span className="mt-1 shrink-0 rounded-md bg-accent/10 px-2 py-0.5 text-[11px] font-bold uppercase tracking-wide text-accent">
+                        Combo
+                      </span>
+                      <div className="min-w-0 flex-1">
+                        <div className="flex items-start justify-between gap-3">
+                          <div className="min-w-0">
+                            <p className="text-sm font-bold text-ink">{linea.nombre}</p>
+                            <p className="mt-1 text-xs text-muted">
+                              Incluye:{' '}
+                              {linea.filas
+                                .map((f) => `${f.cantidad}× ${f.producto?.nombre || 'Producto'}`)
+                                .join(', ')}
+                            </p>
+                          </div>
+                          {edicionActiva &&
+                            editable && (
+                              <button
+                                type="button"
+                                onClick={() => quitarLinea(linea)}
+                                disabled={ocupado}
+                                aria-label={`Quitar ${linea.nombre}`}
+                                className="shrink-0 rounded-full p-1.5 text-muted transition hover:text-danger active:scale-90 disabled:opacity-40"
+                              >
+                                <IconoBasura />
+                              </button>
+                            )}
+                        </div>
+                        <div className="mt-2 flex items-center justify-between">
+                          <span className="text-sm font-medium text-muted">
+                            × {linea.cantidad}
+                          </span>
+                          <span className="text-sm font-bold text-ink">
+                            {formatearMonto(linea.subtotal)}
+                          </span>
+                        </div>
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="flex items-start gap-3">
+                      <div className="min-w-0 flex-1">
+                        <div className="flex items-start justify-between gap-3">
+                          <div className="min-w-0">
+                            <p className="text-sm font-bold text-ink">{linea.nombre}</p>
+                            <p className="text-xs text-muted">
+                              {linea.esMitad && linea.mitad
+                                ? `Mitad y mitad: ${linea.mitad.sabor1Producto?.nombre} + ${linea.mitad.sabor2Producto?.nombre}`
+                                : `Precio unitario ${formatearMonto(linea.precioUnitario)}`}
+                            </p>
+                            {linea.modificadores.length > 0 && (
+                              <p className="mt-0.5 text-xs text-muted">
+                                {linea.modificadores
+                                  .map((m) => m.modificador?.nombre || m.nombre)
+                                  .join(', ')}
+                              </p>
+                            )}
+                          </div>
+                          {edicionActiva && editable && (
+                            <button
+                              type="button"
+                              onClick={() => quitarLinea(linea)}
+                              disabled={ocupado}
+                              aria-label={`Quitar ${linea.nombre}`}
+                              className="shrink-0 rounded-full p-1.5 text-muted transition hover:text-danger active:scale-90 disabled:opacity-40"
+                            >
+                              <IconoBasura />
+                            </button>
+                          )}
+                        </div>
+                        <div className="mt-2 flex items-center justify-between">
+                          <span className="text-sm font-medium text-muted">
+                            × {linea.cantidad}
+                          </span>
+                          <span className="text-sm font-bold text-ink">
+                            {formatearMonto(linea.subtotal)}
+                          </span>
+                        </div>
+                      </div>
+                    </div>
+                  )}
+                </li>
+              ))}
+            </ul>
+
+            <footer className="border-t border-muted/10 px-5 py-4">
+              {esDomicilio && pedido.costoEnvio > 0 && (
+                <div className="mb-1 flex items-center justify-between text-sm">
+                  <span className="text-muted">Envío</span>
+                  <span className="font-semibold text-ink">{formatearMonto(pedido.costoEnvio)}</span>
+                </div>
+              )}
+              <div className="flex items-center justify-between">
+                <span className="text-base font-semibold text-ink">Total</span>
+                <span className="text-xl font-bold text-ink">{formatearMonto(pedido.total)}</span>
+              </div>
+              {pedido.cambioALlevar != null && (
+                <div className="mt-1 flex items-center justify-between text-sm">
+                  <span className="text-muted">Cambio a llevar</span>
+                  <span className="font-semibold text-accent">
+                    {formatearMonto(pedido.cambioALlevar)}
+                  </span>
+                </div>
+              )}
+            </footer>
+          </div>
+        </section>
+
+        {(editable || cancelable || enEntregado) && (
+          <section className="rounded-3xl bg-card p-5 shadow-card">
+            <EtiquetaSeccion>Acciones</EtiquetaSeccion>
+            <div className="flex flex-wrap gap-3">
+              {enPendiente && (
+                <Button size="md" onClick={pausar} disabled={ocupado}>
+                  Pasar a En preparación
+                </Button>
+              )}
+              {esDomicilio && (enPendiente || enPreparacion) && (
+                <Button size="md" onClick={marcarEnviado} disabled={ocupado}>
+                  Marcar Enviado
+                </Button>
+              )}
+              {((enEnviado && esDomicilio) || (enPreparacion && !esDomicilio)) && (
+                <Button size="md" onClick={marcarEntregado} disabled={ocupado}>
+                  Marcar Entregado
+                </Button>
+              )}
+              {enEntregado && pendienteDePago && (
+                <Button size="md" onClick={marcarPagado} disabled={ocupado}>
+                  Marcar Pagado
+                </Button>
+              )}
+
+              {editable && (
+                <Button
+                  variant="secondary"
+                  size="md"
+                  onClick={() => setEdicionActiva((v) => !v)}
+                  disabled={ocupado}
+                >
+                  {edicionActiva ? 'Terminar edición' : 'Editar pedido'}
+                </Button>
+              )}
+
+              {edicionActiva && editable && (
+                <Button variant="secondary" size="md" onClick={abrirAgregar} disabled={ocupado}>
+                  + Agregar producto
+                </Button>
+              )}
+
+              {cancelable && (
+                <Button size="md" onClick={cancelarPedido} disabled={ocupado} className="bg-danger text-white active:bg-danger/85">
+                  Cancelar pedido
+                </Button>
+              )}
+            </div>
+            {ocupado && <p className="mt-3 text-sm text-muted">Procesando…</p>}
+          </section>
+        )}
+      </div>
+
+      {modalRepartidor && (
+        <ModalRepartidor
+          disponibles={repartidores}
+          onSeleccionar={enviarConRepartidor}
+          onCancelar={() => setModalRepartidor(false)}
+        />
+      )}
+      {modalAgregar && (
+        <ModalAgregar
+          productos={productos || []}
+          combos={combos || []}
+          onAgregar={agregarLinea}
+          onCancelar={() => setModalAgregar(false)}
+        />
+      )}
+    </main>
+  )
+}
+
+export default DetallePedidoPage
