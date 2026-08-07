@@ -10,6 +10,7 @@ import {
   editarPedido,
   obtenerRepartidoresDisponibles,
 } from '../services/pedidos'
+import { esMismaConfiguracion } from '../utils/ticket'
 
 const CONFIG_ESTADOS = {
   Pendiente: {
@@ -134,9 +135,11 @@ function construirLineas(pedido) {
       if (!grupos.has(pp.comboId)) {
         grupos.set(pp.comboId, {
           tipo: 'combo',
+          tipoLinea: 'combo',
           comboId: pp.comboId,
           nombre: pp.combo?.nombre || 'Combo',
           comboPrecioCongelado: pp.comboPrecioCongelado,
+          nota: pp.nota ?? '',
           filas: [],
           pedidoProductoIds: [],
         })
@@ -147,13 +150,19 @@ function construirLineas(pedido) {
       const conMods = (pp.modificadores || []).reduce((acc, m) => acc + m.costoAplicado, 0)
       normales.push({
         tipo: 'producto',
+        tipoLinea: 'producto',
         pedidoProductoId: pp.id,
+        productoId: pp.productoId,
         nombre: pp.producto?.nombre || 'Producto',
         cantidad: pp.cantidad,
         precioUnitario: pp.precioCongelado + conMods,
         esMitad: pp.esMitadYMitad,
+        esMitadYMitad: pp.esMitadYMitad,
+        sabor1: pp.mitadYMitad ? { id: pp.mitadYMitad.sabor1ProductoId } : null,
+        sabor2: pp.mitadYMitad ? { id: pp.mitadYMitad.sabor2ProductoId } : null,
         mitad: pp.mitadYMitad,
         modificadores: pp.modificadores || [],
+        nota: pp.nota ?? '',
         subtotal: (pp.precioCongelado + conMods) * pp.cantidad,
       })
     }
@@ -534,10 +543,41 @@ function DetallePedidoPage() {
   }
 
   const agregarLinea = (item) => {
-    correr(
-      () => editarPedido(id, { agregarProductos: [item] }),
-      'Producto agregado y total recalculado',
-    ).then((res) => {
+    const nuevo = item.tipoLinea
+      ? item
+      : item.comboId
+        ? { tipoLinea: 'combo', comboId: item.comboId, nota: '', cantidad: item.cantidad }
+        : {
+            tipoLinea: 'producto',
+            productoId: item.productoId,
+            esMitadYMitad: false,
+            sabor1: null,
+            sabor2: null,
+            modificadores: [],
+            nota: '',
+            cantidad: item.cantidad,
+          }
+    const coincidencia = lineas.find((l) => esMismaConfiguracion(l, nuevo))
+    const tarea = coincidencia
+      ? () =>
+          editarPedido(id, {
+            actualizarProductos:
+              coincidencia.tipoLinea === 'combo'
+                ? [
+                    {
+                      comboId: coincidencia.comboId,
+                      cantidad: coincidencia.cantidad + nuevo.cantidad,
+                    },
+                  ]
+                : [
+                    {
+                      pedidoProductoId: coincidencia.pedidoProductoId,
+                      cantidad: coincidencia.cantidad + nuevo.cantidad,
+                    },
+                  ],
+          })
+      : () => editarPedido(id, { agregarProductos: [item] })
+    correr(tarea, 'Producto agregado y total recalculado').then((res) => {
       if (res) setEdicionActiva(true)
     })
     setModalAgregar(false)

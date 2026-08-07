@@ -5,6 +5,7 @@ import { obtenerCombos, obtenerProductos } from '../services/catalogo'
 import { crearPedido } from '../services/pedidos'
 import { crearCliente, crearReferencia, listarClientes } from '../services/clientes'
 import { obtenerConfiguracion } from '../services/configuracion'
+import { agregarLinea } from '../utils/ticket'
 
 const TIPOS_PEDIDO = [
   { id: 'Para_recoger', etiqueta: 'Para recoger' },
@@ -479,46 +480,12 @@ function NuevoPedidoPage() {
     producto.permiteMitadYMitad ||
     (producto.productoModificadores || []).some((pm) => pm.modificador?.estado === 'Activo')
 
-  const idsModificadoresDe = (item) =>
-    (item.modificadores || []).map((m) => m.id).sort((a, b) => a - b)
-
-  const esMismaConfiguracion = (a, b) => {
-    if (a.tipoLinea !== b.tipoLinea) return false
-    if (a.tipoLinea === 'combo') {
-      return a.comboId === b.comboId && a.nota === b.nota
-    }
-    if (a.productoId !== b.productoId) return false
-    if (a.esMitadYMitad !== b.esMitadYMitad) return false
-    if (a.esMitadYMitad && (a.sabor1?.id !== b.sabor1?.id || a.sabor2?.id !== b.sabor2?.id)) {
-      return false
-    }
-    const modsA = idsModificadoresDe(a)
-    const modsB = idsModificadoresDe(b)
-    if (modsA.length !== modsB.length) return false
-    for (let i = 0; i < modsA.length; i += 1) {
-      if (modsA[i] !== modsB[i]) return false
-    }
-    return a.nota === b.nota
-  }
-
-  const agregarLinea = (linea) => {
-    setTicket((t) => {
-      const coincidencia = t.findIndex((item) => esMismaConfiguracion(item, linea))
-      if (coincidencia >= 0) {
-        const copia = t.slice()
-        copia[coincidencia] = { ...copia[coincidencia], cantidad: copia[coincidencia].cantidad + 1 }
-        return copia
-      }
-      return [...t, linea]
-    })
-  }
-
   const seleccionarProducto = (producto) => {
     if (tieneConfiguracion(producto)) {
       setModalProducto(producto)
       return
     }
-    agregarLinea({
+    agregarLinea(setTicket, {
       key: crypto.randomUUID(),
       tipoLinea: 'producto',
       productoId: producto.id,
@@ -534,7 +501,7 @@ function NuevoPedidoPage() {
   }
 
   const seleccionarCombo = (combo) => {
-    agregarLinea({
+    agregarLinea(setTicket, {
       key: crypto.randomUUID(),
       tipoLinea: 'combo',
       comboId: combo.id,
@@ -550,7 +517,7 @@ function NuevoPedidoPage() {
   }
 
   const manejarAgregarModal = (config) => {
-    agregarLinea({
+    agregarLinea(setTicket, {
       key: crypto.randomUUID(),
       tipoLinea: 'producto',
       productoId: config.productoId,
@@ -713,7 +680,8 @@ function NuevoPedidoPage() {
       ...(tipo === 'A_domicilio' && modoCliente === 'libre'
         ? { referenciaLibre: referenciaLibre.trim() }
         : {}),
-      ...(requiereMonto ? { metodoPago, montoReferenciaPago: montoCambio } : {}),
+      metodoPago,
+      ...(requiereMonto ? { montoReferenciaPago: montoCambio } : {}),
     }
 
     setEnviando(true)

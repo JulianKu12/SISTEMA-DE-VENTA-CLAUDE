@@ -615,7 +615,7 @@ export const cambiarEstadoPreparacion = asyncHandler(async (req, res) => {
 // productos. Al quitar, se recalcula el total y el cambio_a_llevar.
 export const editarPedido = asyncHandler(async (req, res) => {
   const { id } = req.params
-  const { agregarProductos, quitarProductos } = req.body
+  const { agregarProductos, quitarProductos, actualizarProductos } = req.body
 
   const resultado = await prisma.$transaction(async (tx) => {
     const pedido = await tx.pedido.findUnique({ where: { id: Number(id) } })
@@ -663,6 +663,39 @@ export const editarPedido = asyncHandler(async (req, res) => {
         await tx.pedido_Producto_Modificador.deleteMany({ where: { pedidoProductoId: pp.id } })
         await tx.pedido_Producto_Mitad.deleteMany({ where: { pedidoProductoId: pp.id } })
         await tx.pedido_Producto.delete({ where: { id: pp.id } })
+      }
+    }
+
+    // Actualizar cantidad de líneas existentes (fusión al agregar un ítem
+    // idéntico). Preserva precio/costo congelados de la línea original.
+    if (Array.isArray(actualizarProductos) && actualizarProductos.length > 0) {
+      for (const u of actualizarProductos) {
+        if (!Number.isInteger(u.cantidad) || u.cantidad < 1) {
+          throw new HttpError(400, 'cada actualizarProducto requiere cantidad (entero >= 1)')
+        }
+        if (u.comboId != null) {
+          const filas = await tx.pedido_Producto.findMany({
+            where: { pedidoId: pedido.id, comboId: Number(u.comboId) },
+          })
+          if (filas.length === 0) {
+            throw new HttpError(404, 'No hay líneas con ese comboId en este pedido')
+          }
+          await tx.pedido_Producto.updateMany({
+            where: { pedidoId: pedido.id, comboId: Number(u.comboId) },
+            data: { cantidad: u.cantidad },
+          })
+        } else if (u.pedidoProductoId != null) {
+          const pp = await tx.pedido_Producto.findFirst({
+            where: { id: Number(u.pedidoProductoId), pedidoId: pedido.id },
+          })
+          if (!pp) throw new HttpError(404, 'El pedidoProductoId indicado no pertenece a este pedido')
+          await tx.pedido_Producto.update({
+            where: { id: pp.id },
+            data: { cantidad: u.cantidad },
+          })
+        } else {
+          throw new HttpError(400, 'cada actualizarProducto requiere comboId o pedidoProductoId')
+        }
       }
     }
 
@@ -733,8 +766,11 @@ export const editarPedido = asyncHandler(async (req, res) => {
       }
     }
     let total = 0
+    const combosContados = new Set()
     for (const pp of productosFinales) {
       if (pp.comboId) {
+        if (combosContados.has(pp.comboId)) continue
+        combosContados.add(pp.comboId)
         const cpCant = mapaCp.get(`${pp.comboId}:${pp.productoId}`) ?? 1
         total += pp.comboPrecioCongelado * (pp.cantidad / cpCant)
       } else {

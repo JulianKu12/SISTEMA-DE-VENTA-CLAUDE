@@ -4,6 +4,7 @@ import LoginPage from './pages/LoginPage'
 import NuevoPedidoPage from './pages/NuevoPedidoPage'
 import PedidosPage from './pages/PedidosPage'
 import DetallePedidoPage from './pages/DetallePedidoPage'
+import ConfiguracionMenuPage from './pages/ConfiguracionMenuPage'
 import PlaceholderPage from './pages/PlaceholderPage'
 
 function RutaProtegida({ children }) {
@@ -44,7 +45,7 @@ function App() {
         path="/configuracion"
         element={
           <RutaProtegida>
-            <PlaceholderPage titulo="Configuración de menú" />
+            <ConfiguracionMenuPage />
           </RutaProtegida>
         }
       />
