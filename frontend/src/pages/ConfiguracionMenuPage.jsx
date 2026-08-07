@@ -622,6 +622,10 @@ function ConfiguracionMenuPage() {
       if (res.status === 200) {
         setNotificacion(res.datos.mensaje || 'Ingrediente desactivado')
         recargarIngredientes()
+        recargarProductos()
+        if (res.datos.aviso) {
+          setAvisoCombos({ titulo: 'Combos suspendidos', mensaje: res.datos.aviso.mensaje, combos: res.datos.aviso.combosSuspendidos })
+        }
       }
       setDesactivarIng(null)
     } catch (err) {
