@@ -134,6 +134,9 @@ try {
     metodoPago: 'Efectivo', montoReferenciaPago: 20,
   }, tokenAdmin)
   ok(p.status === 201 && p.data.estadoPago === 'Pendiente_pago', 'admin crea pedido A_domicilio (Pendiente_pago)')
+  // Secuencia estricta: Pendiente -> En_preparacion -> Enviado (docs/06).
+  const prepP = await req('PATCH', `/api/pedidos/${p.data.id}/estado-preparacion`, { estadoPreparacion: 'En_preparacion' }, tokenAdmin)
+  ok(prepP.status === 200, 'admin pasa el pedido a En_preparacion')
   const enviado = await req('PATCH', `/api/pedidos/${p.data.id}/estado-preparacion`, { estadoPreparacion: 'Enviado', repartidorId: r1.data.id }, tokenAdmin)
   ok(enviado.status === 200 && enviado.data.pedido.repartidorId === r1.data.id, 'admin asigna repartidor 1 al marcar Enviado')
 
@@ -181,6 +184,9 @@ try {
     productos: [{ productoId: coca.id, cantidad: 1 }], noCobrar: true,
   }, tokenRep)
   ok(pedidoEntregaNC.status === 201 && pedidoEntregaNC.data.noCobrar === true && pedidoEntregaNC.data.estadoPago === 'Pendiente_pago' && pedidoEntregaNC.data.venta === null, 'repartidor crea pedido No cobrar (Pendiente_pago, sin venta aún)')
+  // Secuencia estricta: Pendiente -> En_preparacion -> Enviado (docs/06).
+  const prepNC = await req('PATCH', `/api/pedidos/${pedidoEntregaNC.data.id}/estado-preparacion`, { estadoPreparacion: 'En_preparacion' }, tokenAdmin)
+  ok(prepNC.status === 200, 'admin pasa el pedido NC a En_preparacion')
   const enviadoNC = await req('PATCH', `/api/pedidos/${pedidoEntregaNC.data.id}/estado-preparacion`, { estadoPreparacion: 'Enviado', repartidorId: r1.data.id }, tokenAdmin)
   ok(enviadoNC.status === 200 && enviadoNC.data.pedido.repartidorId === r1.data.id, 'admin asigna repartidor 1 al pedido NC')
   const entregaNC = await req('PATCH', `/api/pedidos/${pedidoEntregaNC.data.id}/estado-preparacion`, { estadoPreparacion: 'Entregado', noCobrar: true }, tokenRep)
@@ -198,6 +204,8 @@ try {
     metodoPago: 'Efectivo', montoReferenciaPago: 20,
   }, tokenAdmin)
   ok(pedidoSinNC.status === 201 && pedidoSinNC.data.estadoPago === 'Pendiente_pago', 'admin crea pedido A_domicilio (Pendiente_pago)')
+  // Secuencia estricta: Pendiente -> En_preparacion -> Enviado (docs/06).
+  await req('PATCH', `/api/pedidos/${pedidoSinNC.data.id}/estado-preparacion`, { estadoPreparacion: 'En_preparacion' }, tokenAdmin)
   await req('PATCH', `/api/pedidos/${pedidoSinNC.data.id}/estado-preparacion`, { estadoPreparacion: 'Enviado', repartidorId: r1.data.id }, tokenAdmin)
   const entregaSin = await req('PATCH', `/api/pedidos/${pedidoSinNC.data.id}/estado-preparacion`, { estadoPreparacion: 'Entregado' }, tokenRep)
   ok(entregaSin.status === 200 && entregaSin.data.venta === undefined, 'Entregado sin noCobrar NO genera venta')

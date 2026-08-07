@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 import Button from '../components/ui/Button'
+import ConfirmModal from '../components/ui/ConfirmModal'
 import { obtenerCombos, obtenerProductos } from '../services/catalogo'
 import {
   obtenerPedido,
@@ -368,6 +369,8 @@ function DetallePedidoPage() {
   const [edicionActiva, setEdicionActiva] = useState(false)
   const [productos, setProductos] = useState(null)
   const [combos, setCombos] = useState(null)
+  const [confirmarCancelarAbierto, setConfirmarCancelarAbierto] = useState(false)
+  const [regresoPendiente, setRegresoPendiente] = useState(null)
 
   const cargar = useCallback(async () => {
     setError('')
@@ -464,23 +467,56 @@ function DetallePedidoPage() {
     )
   }
 
-  const cancelarPedido = async () => {
+  const iniciarCancelar = () => {
     if (ocupado) return
-    if (!window.confirm(`¿Cancelar el pedido #${pedido.id}?`)) return
-    const regresaAInventario = window.confirm(
-      '¿Los ingredientes se regresan al inventario? (Aceptar = sí se regresan · Cancelar = no se regresan)',
-    )
-    const res = await correr(
-      () =>
-        cambiarEstadoPreparacion(id, {
-          estadoPreparacion: 'Cancelado',
-          regresaAInventario,
-        }),
-      regresaAInventario
-        ? 'Pedido cancelado y regresado a inventario'
-        : 'Pedido cancelado (sin regreso a inventario)',
-    )
-    if (res) setEdicionActiva(false)
+    setConfirmarCancelarAbierto(true)
+  }
+
+  const confirmarCancelacion = () => {
+    setConfirmarCancelarAbierto(false)
+    setRegresoPendiente({ tipo: 'cancelar' })
+  }
+
+  // Resuelve la pregunta de inventario tras confirmar una cancelación o un
+  // quitar-ítem. `regresa` = true cuando se pulsa "Sí, regresar".
+  const resolverRegreso = (regresa) => {
+    const pendiente = regresoPendiente
+    setRegresoPendiente(null)
+    if (!pendiente) return
+    if (pendiente.tipo === 'cancelar') {
+      correr(
+        () =>
+          cambiarEstadoPreparacion(id, {
+            estadoPreparacion: 'Cancelado',
+            regresaAInventario: regresa,
+          }),
+        regresa
+          ? 'Pedido cancelado y regresado a inventario'
+          : 'Pedido cancelado (sin regreso a inventario)',
+      ).then((res) => {
+        if (res) setEdicionActiva(false)
+      })
+      return
+    }
+    const linea = pendiente.linea
+    const ids =
+      linea.tipo === 'combo'
+        ? linea.pedidoProductoIds.map((pedidoProductoId) => ({
+            pedidoProductoId,
+            regresaAInventario: regresa,
+          }))
+        : [{ pedidoProductoId: linea.pedidoProductoId, regresaAInventario: regresa }]
+    correr(
+      () => editarPedido(id, { quitarProductos: ids }),
+      'Producto quitado y total recalculado',
+    ).then((res) => {
+      if (res && lineas.length === 1) setEdicionActiva(false)
+    })
+  }
+
+  const iniciarQuitar = (linea) => {
+    if (ocupado) return
+    setRegresoPendiente({ tipo: 'quitar', linea })
   }
 
   const abrirAgregar = async () => {
@@ -505,25 +541,6 @@ function DetallePedidoPage() {
       if (res) setEdicionActiva(true)
     })
     setModalAgregar(false)
-  }
-
-  const quitarLinea = async (linea) => {
-    if (ocupado) return
-    const regresaAInventario = window.confirm(
-      `¿Regresar "${linea.nombre}" al inventario? (Aceptar = sí se regresa · Cancelar = no se regresa)`,
-    )
-    const ids =
-      linea.tipo === 'combo'
-        ? linea.pedidoProductoIds.map((pedidoProductoId) => ({
-            pedidoProductoId,
-            regresaAInventario,
-          }))
-        : [{ pedidoProductoId: linea.pedidoProductoId, regresaAInventario }]
-    const res = await correr(
-      () => editarPedido(id, { quitarProductos: ids }),
-      'Producto quitado y total recalculado',
-    )
-    if (res && lineas.length === 1) setEdicionActiva(false)
   }
 
   const marcarPagado = () => {
@@ -682,7 +699,7 @@ function DetallePedidoPage() {
                             editable && (
                               <button
                                 type="button"
-                                onClick={() => quitarLinea(linea)}
+                                onClick={() => iniciarQuitar(linea)}
                                 disabled={ocupado}
                                 aria-label={`Quitar ${linea.nombre}`}
                                 className="shrink-0 rounded-full p-1.5 text-muted transition hover:text-danger active:scale-90 disabled:opacity-40"
@@ -723,7 +740,7 @@ function DetallePedidoPage() {
                           {edicionActiva && editable && (
                             <button
                               type="button"
-                              onClick={() => quitarLinea(linea)}
+                              onClick={() => iniciarQuitar(linea)}
                               disabled={ocupado}
                               aria-label={`Quitar ${linea.nombre}`}
                               className="shrink-0 rounded-full p-1.5 text-muted transition hover:text-danger active:scale-90 disabled:opacity-40"
@@ -779,7 +796,7 @@ function DetallePedidoPage() {
                   Pasar a En preparación
                 </Button>
               )}
-              {esDomicilio && (enPendiente || enPreparacion) && (
+              {enPreparacion && esDomicilio && (
                 <Button size="md" onClick={marcarEnviado} disabled={ocupado}>
                   Marcar Enviado
                 </Button>
@@ -813,7 +830,7 @@ function DetallePedidoPage() {
               )}
 
               {cancelable && (
-                <Button size="md" onClick={cancelarPedido} disabled={ocupado} className="bg-danger text-white active:bg-danger/85">
+                <Button size="md" onClick={iniciarCancelar} disabled={ocupado} className="bg-danger text-white active:bg-danger/85">
                   Cancelar pedido
                 </Button>
               )}
@@ -838,6 +855,31 @@ function DetallePedidoPage() {
           onCancelar={() => setModalAgregar(false)}
         />
       )}
+
+      <ConfirmModal
+        abierto={confirmarCancelarAbierto}
+        titulo="Cancelar pedido"
+        mensaje={`¿Seguro que quieres cancelar el pedido #${pedido.id}?`}
+        confirmarEtiqueta="Cancelar pedido"
+        cancelarEtiqueta="Volver"
+        variante="danger"
+        onConfirmar={confirmarCancelacion}
+        onCancelar={() => setConfirmarCancelarAbierto(false)}
+      />
+
+      <ConfirmModal
+        abierto={regresoPendiente !== null}
+        titulo="Regresar inventario"
+        mensaje={
+          regresoPendiente?.tipo === 'quitar'
+            ? `¿Regresar "${regresoPendiente.linea.nombre}" al inventario?`
+            : '¿Los ingredientes se regresan al inventario?'
+        }
+        confirmarEtiqueta="Sí, regresar"
+        cancelarEtiqueta="No regresar"
+        onConfirmar={() => resolverRegreso(true)}
+        onCancelar={() => resolverRegreso(false)}
+      />
     </main>
   )
 }

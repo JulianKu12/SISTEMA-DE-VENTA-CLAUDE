@@ -479,8 +479,38 @@ function NuevoPedidoPage() {
     producto.permiteMitadYMitad ||
     (producto.productoModificadores || []).some((pm) => pm.modificador?.estado === 'Activo')
 
+  const idsModificadoresDe = (item) =>
+    (item.modificadores || []).map((m) => m.id).sort((a, b) => a - b)
+
+  const esMismaConfiguracion = (a, b) => {
+    if (a.tipoLinea !== b.tipoLinea) return false
+    if (a.tipoLinea === 'combo') {
+      return a.comboId === b.comboId && a.nota === b.nota
+    }
+    if (a.productoId !== b.productoId) return false
+    if (a.esMitadYMitad !== b.esMitadYMitad) return false
+    if (a.esMitadYMitad && (a.sabor1?.id !== b.sabor1?.id || a.sabor2?.id !== b.sabor2?.id)) {
+      return false
+    }
+    const modsA = idsModificadoresDe(a)
+    const modsB = idsModificadoresDe(b)
+    if (modsA.length !== modsB.length) return false
+    for (let i = 0; i < modsA.length; i += 1) {
+      if (modsA[i] !== modsB[i]) return false
+    }
+    return a.nota === b.nota
+  }
+
   const agregarLinea = (linea) => {
-    setTicket((t) => [...t, linea])
+    setTicket((t) => {
+      const coincidencia = t.findIndex((item) => esMismaConfiguracion(item, linea))
+      if (coincidencia >= 0) {
+        const copia = t.slice()
+        copia[coincidencia] = { ...copia[coincidencia], cantidad: copia[coincidencia].cantidad + 1 }
+        return copia
+      }
+      return [...t, linea]
+    })
   }
 
   const seleccionarProducto = (producto) => {
@@ -520,27 +550,24 @@ function NuevoPedidoPage() {
   }
 
   const manejarAgregarModal = (config) => {
-    setTicket((t) => [
-      ...t,
-      {
-        key: crypto.randomUUID(),
-        tipoLinea: 'producto',
-        productoId: config.productoId,
-        nombre: config.nombre,
-        esMitadYMitad: config.esMitadYMitad,
-        sabor1: config.sabor1,
-        sabor2: config.sabor2,
-        modificadores: config.modificadores.map((m) => ({
-          id: m.id,
-          nombre: m.nombre,
-          tipo: m.tipo,
-          costoAdicional: m.costoAdicional || 0,
-        })),
-        nota: config.nota,
-        precioUnitario: config.precio,
-        cantidad: 1,
-      },
-    ])
+    agregarLinea({
+      key: crypto.randomUUID(),
+      tipoLinea: 'producto',
+      productoId: config.productoId,
+      nombre: config.nombre,
+      esMitadYMitad: config.esMitadYMitad,
+      sabor1: config.sabor1,
+      sabor2: config.sabor2,
+      modificadores: config.modificadores.map((m) => ({
+        id: m.id,
+        nombre: m.nombre,
+        tipo: m.tipo,
+        costoAdicional: m.costoAdicional || 0,
+      })),
+      nota: config.nota,
+      precioUnitario: config.precio,
+      cantidad: 1,
+    })
     setModalProducto(null)
   }
 

@@ -435,16 +435,29 @@ export const cambiarEstadoPago = asyncHandler(async (req, res) => {
   })
 })
 
-// Matriz de transiciones válidas de estado_preparacion (docs/06):
-//   Pendiente/En_preparacion -> Enviado (solo A_domicilio, con repartidor)
-//   Pendiente/En_preparacion/Enviado -> Entregado
-//   Cualquiera antes de Entregado -> Cancelado (requiere regresa_a_inventario)
+// Matriz de transiciones válidas de estado_preparacion, estrictamente
+// secuenciales y por tipo (docs/06): nunca se salta un estado.
+//   A_domicilio  -> Pendiente → En_preparacion → Enviado → Entregado
+//   Para_recoger -> Pendiente → En_preparacion → Entregado   (sin Enviado)
+//   Cancelado siempre es válido desde cualquier estado antes de Entregado.
 const TRANSICIONES = {
-  Pendiente: ['En_preparacion', 'Enviado', 'Entregado', 'Cancelado'],
-  En_preparacion: ['Enviado', 'Entregado', 'Cancelado'],
-  Enviado: ['Entregado', 'Cancelado'],
-  Entregado: [],
-  Cancelado: [],
+  A_domicilio: {
+    Pendiente: ['En_preparacion', 'Cancelado'],
+    En_preparacion: ['Enviado', 'Cancelado'],
+    Enviado: ['Entregado', 'Cancelado'],
+    Entregado: [],
+    Cancelado: [],
+  },
+  Para_recoger: {
+    Pendiente: ['En_preparacion', 'Cancelado'],
+    En_preparacion: ['Entregado', 'Cancelado'],
+    Entregado: [],
+    Cancelado: [],
+  },
+}
+
+function estadosTransicionables(estadoPreparacion, tipo) {
+  return TRANSICIONES[tipo]?.[estadoPreparacion] || []
 }
 
 // Regresa al inventario el consumo del pedido al cancelarse (solo aplica si el
@@ -495,11 +508,11 @@ export const cambiarEstadoPreparacion = asyncHandler(async (req, res) => {
     const pedido = await tx.pedido.findUnique({ where: { id: Number(id) } })
     if (!pedido) throw new HttpError(404, 'Pedido no encontrado')
 
-    const permitidas = TRANSICIONES[pedido.estadoPreparacion] || []
+    const permitidas = estadosTransicionables(pedido.estadoPreparacion, pedido.tipo)
     if (!permitidas.includes(estadoPreparacion)) {
       throw new HttpError(
         400,
-        `No se puede pasar un pedido ${pedido.estadoPreparacion} a ${estadoPreparacion}`
+        `No se puede pasar un pedido ${pedido.estadoPreparacion} a ${estadoPreparacion}. Secuencia válida ${pedido.tipo === 'A_domicilio' ? 'Pendiente → En_preparacion → Enviado → Entregado' : 'Pendiente → En_preparacion → Entregado'}.`
       )
     }
 

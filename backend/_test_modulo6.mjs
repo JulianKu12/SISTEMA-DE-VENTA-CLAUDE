@@ -214,6 +214,9 @@ try {
   ok((await stockProducto(coca.id)) === 7, 'stock coca 8->7 tras pago de P2')
 
   console.log('== Asignacion de repartidor (P4, repartidor unico activo) ==')
+  // Secuencia estricta: Pendiente -> En_preparacion -> Enviado (docs/06).
+  const enPrep4 = await req('PATCH', `/api/pedidos/${p4.data.id}/estado-preparacion`, { estadoPreparacion: 'En_preparacion' })
+  ok(enPrep4.status === 200 && enPrep4.data.pedido.estadoPreparacion === 'En_preparacion', 'P4 pasa a En_preparacion')
   const enviado = await req('PATCH', `/api/pedidos/${p4.data.id}/estado-preparacion`, { estadoPreparacion: 'Enviado' })
   ok(enviado.status === 200 && enviado.data.pedido.repartidorId === emp.data.id, 'repartidor unico asignado automaticamente al Enviar')
   const malEnviado = await req('PATCH', `/api/pedidos/${p3.data.id}/estado-preparacion`, { estadoPreparacion: 'Enviado' })
