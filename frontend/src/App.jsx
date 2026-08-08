@@ -5,6 +5,7 @@ import NuevoPedidoPage from './pages/NuevoPedidoPage'
 import PedidosPage from './pages/PedidosPage'
 import DetallePedidoPage from './pages/DetallePedidoPage'
 import ConfiguracionMenuPage from './pages/ConfiguracionMenuPage'
+import RepartidoresPage from './pages/RepartidoresPage'
 import PlaceholderPage from './pages/PlaceholderPage'
 
 function RutaProtegida({ children }) {
@@ -69,7 +70,7 @@ function App() {
         path="/repartidores"
         element={
           <RutaProtegida>
-            <PlaceholderPage titulo="Repartidores" />
+            <RepartidoresPage />
           </RutaProtegida>
         }
       />

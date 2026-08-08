@@ -360,6 +360,30 @@ try {
   ok(cerrar.data.pedidosEntregadosPendientesPago.cantidad === 1, 'aviso: 1 pedido Entregado+Pendiente_pago (cantidad real, no undefined)')
   ok(cerrar.data.pedidosEntregadosPendientesPago.monto === 20, 'aviso: monto de Entregado+Pendiente_pago = 20')
 
+  console.log('== Monto de pago: estricto (A_domicilio) vs libre (Para_recoger) ==')
+  // Para_recoger acepta CUALQUIER monto numérico válido >= total, aunque no
+  // esté en las opciones configuradas (docs/07): el monto libre via "Otro".
+  const montoLibre = await req('POST', '/api/pedidos', {
+    tipo: 'Para_recoger', origen: 'Telefono', nombreClienteLibre: 'Monto Libre',
+    productos: [{ productoId: coca.id, cantidad: 1 }],
+    metodoPago: 'Efectivo', montoReferenciaPago: 37, usuarioId: admin.id,
+  })
+  ok(montoLibre.status === 201 && montoLibre.data.cambioALlevar === 22, 'Para_recoger acepta monto libre no configurado (37 -> cambio 22)')
+  const montoBajo = await req('POST', '/api/pedidos', {
+    tipo: 'Para_recoger', origen: 'Telefono', nombreClienteLibre: 'Monto Bajo',
+    productos: [{ productoId: coca.id, cantidad: 1 }],
+    metodoPago: 'Efectivo', montoReferenciaPago: 10, usuarioId: admin.id,
+  })
+  ok(montoBajo.status === 400 && /no cubre el total|cubrir el total/i.test(montoBajo.data.message), 'Para_recoger rechaza monto menor al total -> 400')
+  // A_domicilio mantiene la validación estricta contra la lista configurada.
+  const montoNoConfigDomicilio = await req('POST', '/api/pedidos', {
+    tipo: 'A_domicilio', origen: 'Telefono', nombreClienteLibre: 'Monto Fijo',
+    referenciaLibre: 'calle del monto 1',
+    productos: [{ productoId: coca.id, cantidad: 1 }],
+    metodoPago: 'Efectivo', montoReferenciaPago: 37, usuarioId: admin.id,
+  })
+  ok(montoNoConfigDomicilio.status === 400 && /opciones de cambio/i.test(montoNoConfigDomicilio.data.message), 'A_domicilio rechaza monto no configurado -> 400')
+
   console.log(`\nResultado: ${fallas === 0 ? 'TODAS LAS PRUEBAS PASARON' : fallas + ' prueba(s) fallaron'}`)
 } catch (e) {
   console.error('ERROR EN PRUEBA:', e)

@@ -415,6 +415,8 @@ function NuevoPedidoPage() {
   const [noCobrar, setNoCobrar] = useState(false)
   const [metodoPago, setMetodoPago] = useState('Efectivo')
   const [montoCambio, setMontoCambio] = useState(null)
+  const [modoOtro, setModoOtro] = useState(false)
+  const [montoOtro, setMontoOtro] = useState('')
   const [enviando, setEnviando] = useState(false)
   const [errorConfirmacion, setErrorConfirmacion] = useState('')
   const [errorCliente, setErrorCliente] = useState('')
@@ -468,6 +470,8 @@ function NuevoPedidoPage() {
     if (tipo && !METODOS_PAGO[tipo].includes(metodoPago)) {
       setMetodoPago('Efectivo')
       setMontoCambio(null)
+      setModoOtro(false)
+      setMontoOtro('')
     }
   }, [tipo, metodoPago])
 
@@ -568,7 +572,9 @@ function NuevoPedidoPage() {
   const metodosPagoValidos = tipo ? METODOS_PAGO[tipo] || [] : []
   const costoEnvioAplicado = tipo === 'A_domicilio' && !noCobrar ? costoEnvio : 0
   const totalConEnvio = total + costoEnvioAplicado
-  const cambio = montoCambio != null ? montoCambio - totalConEnvio : null
+  const montoOtroNumerico = montoOtro !== '' ? Number(montoOtro) : null
+  const montoEfectivo = modoOtro ? montoOtroNumerico : montoCambio
+  const cambio = montoEfectivo != null ? montoEfectivo - totalConEnvio : null
 
   const seleccionarCliente = (c) => {
     setCliente(c)
@@ -640,11 +646,11 @@ function NuevoPedidoPage() {
     }
 
     const requiereMonto = !noCobrar && metodoPago === 'Efectivo'
-    if (requiereMonto && montoCambio == null) {
+    if (requiereMonto && montoEfectivo == null) {
       setErrorConfirmacion('Selecciona con cuánto paga el cliente')
       return
     }
-    if (requiereMonto && montoCambio < totalConEnvio) {
+    if (requiereMonto && montoEfectivo < totalConEnvio) {
       setErrorConfirmacion('El monto con el que paga el cliente no cubre el total')
       return
     }
@@ -681,7 +687,7 @@ function NuevoPedidoPage() {
         ? { referenciaLibre: referenciaLibre.trim() }
         : {}),
       metodoPago,
-      ...(requiereMonto ? { montoReferenciaPago: montoCambio } : {}),
+      ...(requiereMonto ? { montoReferenciaPago: montoEfectivo } : {}),
     }
 
     setEnviando(true)
@@ -1043,6 +1049,8 @@ function NuevoPedidoPage() {
                           onClick={() => {
                             setMetodoPago(mp)
                             setMontoCambio(null)
+                            setModoOtro(false)
+                            setMontoOtro('')
                           }}
                           aria-pressed={activo}
                           className={`rounded-full px-3 py-3 text-sm font-semibold transition ${
@@ -1062,13 +1070,16 @@ function NuevoPedidoPage() {
                       <p className="mb-2 text-xs font-semibold text-muted">Cliente paga con</p>
                       <div className="flex flex-wrap gap-2">
                         {opcionesCambio.map((monto) => {
-                          const activo = montoCambio === monto
+                          const activo = !modoOtro && montoCambio === monto
                           const alcanza = monto >= totalConEnvio
                           return (
                             <button
                               key={monto}
                               type="button"
-                              onClick={() => setMontoCambio(monto)}
+                              onClick={() => {
+                                setModoOtro(false)
+                                setMontoCambio(monto)
+                              }}
                               aria-pressed={activo}
                               disabled={!alcanza}
                               className={`rounded-full px-4 py-2.5 text-base font-semibold transition disabled:opacity-35 ${
@@ -1081,7 +1092,47 @@ function NuevoPedidoPage() {
                             </button>
                           )
                         })}
+                        {tipo === 'Para_recoger' && (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setModoOtro(true)
+                              setMontoCambio(null)
+                            }}
+                            aria-pressed={modoOtro}
+                            className={`rounded-full px-4 py-2.5 text-base font-semibold transition ${
+                              modoOtro
+                                ? 'bg-accent text-white shadow-card'
+                                : 'bg-surface text-ink hover:bg-muted/10'
+                            }`}
+                          >
+                            Otro
+                          </button>
+                        )}
                       </div>
+
+                      {tipo === 'Para_recoger' && modoOtro && (
+                        <label className="mt-3 block">
+                          <span className="mb-1 block text-xs font-medium text-muted">
+                            Monto con el que paga
+                          </span>
+                          <input
+                            type="number"
+                            min={0}
+                            step="any"
+                            value={montoOtro}
+                            onChange={(e) => setMontoOtro(e.target.value)}
+                            placeholder="Ej. 35.50"
+                            className="w-full rounded-2xl border-none bg-input px-4 py-3 text-base text-ink outline-none transition placeholder:text-muted/70 focus:ring-2 focus:ring-accent/40"
+                          />
+                          {montoOtroNumerico != null && montoOtroNumerico < totalConEnvio && (
+                            <p className="mt-1 text-sm font-medium text-danger">
+                              El monto no cubre el total ({formatearMonto(totalConEnvio)})
+                            </p>
+                          )}
+                        </label>
+                      )}
+
                       {cambio != null && (
                         <p className="mt-3 text-base font-semibold text-ink">
                           Cambio a llevar: <span className="text-accent">{formatearMonto(cambio)}</span>

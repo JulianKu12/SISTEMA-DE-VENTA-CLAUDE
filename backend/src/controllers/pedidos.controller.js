@@ -201,9 +201,14 @@ export const crearPedido = asyncHandler(async (req, res) => {
       throw new HttpError(400, 'montoReferenciaPago solo aplica si metodoPago=Efectivo y no_cobrar=false')
     }
 
-    // monto_referencia_pago debe estar dentro de las opciones de cambio
-    // configuradas (docs/07). Un monto no configurado -> 400 con error claro.
-    if (montoReferencia != null && !(config.opcionesCambio ?? []).includes(montoReferencia)) {
+    // monto_referencia_pago dentro de las opciones de cambio configuradas
+    // (docs/07) SOLO aplica a pedidos A_domicilio. Para_recoger acepta
+    // cualquier monto numérico válido (opción configurada o monto libre).
+    if (
+      tipo === 'A_domicilio' &&
+      montoReferencia != null &&
+      !(config.opcionesCambio ?? []).includes(montoReferencia)
+    ) {
       throw new HttpError(
         400,
         `montoReferenciaPago (${montoReferencia}) no está dentro de las opciones de cambio configuradas: ${(config.opcionesCambio ?? []).join(', ')}`
