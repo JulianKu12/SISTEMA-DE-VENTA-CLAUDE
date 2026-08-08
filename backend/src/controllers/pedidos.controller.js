@@ -10,7 +10,7 @@ import {
   METODOS_PAGO,
   esEnumValido,
 } from '../utils/enums.js'
-import { sincronizarStockIngrediente } from '../utils/inventario.js'
+import { sincronizarStockIngrediente, stockDe } from '../utils/inventario.js'
 import {
   procesarItem,
   calcularTotalItems,
@@ -706,7 +706,46 @@ export const editarPedido = asyncHandler(async (req, res) => {
 
     // Agregar productos: se congelan precios/costos al momento. Un combo se
     // expande en una fila por producto incluido (todas con el mismo comboId).
+    // Antes de guardar se valida stock (docs/04): el pedido no puede quedar con
+    // un ítem que requiera más inventario del disponible.
     if (Array.isArray(agregarProductos) && agregarProductos.length > 0) {
+      const requerimientos = new Map()
+      const acumular = (tipo, id, cantidad) => {
+        const key = `${tipo}:${id}`
+        requerimientos.set(key, (requerimientos.get(key) || 0) + cantidad)
+      }
+      const agregarConsumos = (consumos) => {
+        for (const c of consumos) acumular(c.tipo, c.id, c.cantidad)
+      }
+
+      for (const item of agregarProductos) {
+        const it = await procesarItem(tx, item)
+        if (it.tipo === 'combo') {
+          for (const dp of it.detalleProductos) agregarConsumos(dp.consumos)
+        } else {
+          agregarConsumos(it.consumos)
+        }
+      }
+
+      const faltantes = []
+      for (const [key, requerido] of requerimientos) {
+        const [tipo, id] = key.split(':')
+        const disponible = await stockDe(tx, tipo, Number(id))
+        if (disponible < requerido) {
+          faltantes.push({ tipo, id: Number(id), requerido, disponible })
+        }
+      }
+      if (faltantes.length > 0) {
+        const e = new HttpError(
+          409,
+          `No se puede editar el pedido: hay stock insuficiente para los productos agregados. ${faltantes
+            .map((f) => `${f.tipo} ${f.id} (requerido ${f.requerido}, hay ${f.disponible})`)
+            .join(', ')}`
+        )
+        e.faltantes = faltantes
+        throw e
+      }
+
       for (const item of agregarProductos) {
         const it = await procesarItem(tx, item)
         if (it.tipo === 'combo') {

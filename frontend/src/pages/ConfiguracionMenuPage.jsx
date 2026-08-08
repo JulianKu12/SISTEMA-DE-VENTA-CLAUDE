@@ -1816,7 +1816,7 @@ function ConfiguracionMenuPage() {
                           >
                             Editar
                           </button>
-                          {desactivado ? (
+                          {desactivado || combo.estado === 'Suspendido' ? (
                             <button
                               type="button"
                               onClick={() => reactivarUnCombo(combo)}
@@ -1825,7 +1825,7 @@ function ConfiguracionMenuPage() {
                             >
                               {desactivandoCombo ? '…' : 'Reactivar'}
                             </button>
-                          ) : combo.estado !== 'Suspendido' ? (
+                          ) : (
                             <button
                               type="button"
                               onClick={() => setDesactivarCombo({ combo })}
@@ -1833,7 +1833,7 @@ function ConfiguracionMenuPage() {
                             >
                               Desactivar
                             </button>
-                          ) : null}
+                          )}
                           <button
                             type="button"
                             onClick={() => setEliminarCombo({ combo, error: '' })}

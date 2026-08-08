@@ -228,6 +228,7 @@ try {
     await tx.venta_Producto_Mitad.deleteMany()
     await tx.venta_Producto.deleteMany()
     await tx.pedido.deleteMany()
+    await tx.devolucion.deleteMany()
     await tx.venta.deleteMany()
     await tx.movimiento_Inventario.deleteMany()
     await tx.empleado.deleteMany()

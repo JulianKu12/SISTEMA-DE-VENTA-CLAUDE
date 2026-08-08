@@ -76,6 +76,11 @@ try {
   ok(refs.status === 200 && refs.data.length === 1, 'listar referencias del cliente')
   const updRef = await req('PATCH', `/api/clientes/referencias/${ref1.data.id}`, { estado: 'Inactivo' })
   ok(updRef.status === 200 && updRef.data.estado === 'Inactivo', 'actualizar referencia (estado)')
+  // Bug 1 (regresión): PATCH de cliente debe conservar `pedidos` en la respuesta
+  // (el frontend reemplaza su detalle con esta respuesta y renderiza pedidos).
+  const patchCli = await req('PATCH', `/api/clientes/${c1.data.id}`, { estado: 'Inactivo' })
+  ok(patchCli.status === 200 && Array.isArray(patchCli.data.pedidos), 'PATCH cliente incluye arreglo pedidos')
+  ok(patchCli.data.estado === 'Inactivo' && Array.isArray(patchCli.data.referencias), 'PATCH cliente conserva estado y referencias')
   const delRef = await req('DELETE', `/api/clientes/referencias/${ref1.data.id}`)
   ok(delRef.status === 204, 'eliminar referencia sin pedidos -> 204')
   const delCli = await req('DELETE', `/api/clientes/${c1.data.id}`)
@@ -206,6 +211,18 @@ try {
     quitarProductos: [{ pedidoProductoId: pp3.id, regresaAInventario: false }],
   })
   ok(malEdicion.status === 404, 'quitar el mismo producto ya eliminado -> 404')
+
+  console.log('== Edicion con stock insuficiente (Bug 3) ==')
+  const pSinStock = await req('POST', '/api/productos', { nombre: 'SinStock6', precio: 5, tipo: 'Reventa_directa' })
+  const editSinStock = await req('PATCH', `/api/pedidos/${p3.data.id}`, {
+    agregarProductos: [{ productoId: pSinStock.data.id, cantidad: 2 }],
+  })
+  ok(editSinStock.status === 409, 'agregar producto sin stock -> 409')
+  const detSinStock = await req('GET', `/api/pedidos/${p3.data.id}/detalle`)
+  ok(
+    detSinStock.data.productos.every((pp) => pp.producto?.id !== pSinStock.data.id),
+    'el producto sin stock NO quedó guardado en el pedido (transacción revierte)',
+  )
 
   console.log('== Pago diferido (P2) ==')
   const pagar2 = await req('PATCH', `/api/pedidos/${p2.data.id}/estado-pago`, { estadoPago: 'Pagado', usuarioId: admin.id })
@@ -397,6 +414,7 @@ try {
     await tx.venta_Producto_Mitad.deleteMany()
     await tx.venta_Producto.deleteMany()
     await tx.pedido.deleteMany()
+    await tx.devolucion.deleteMany()
     await tx.venta.deleteMany()
     await tx.movimiento_Inventario.deleteMany()
     await tx.combo_Producto.deleteMany()

@@ -74,7 +74,12 @@ export const actualizar = asyncHandler(async (req, res) => {
   const actualizado = await prisma.cliente.update({
     where: { id: existente.id },
     data,
-    include: includeCliente,
+    // Misma forma que `obtener`: el detalle del frontend (ClientesPage) reemplaza
+    // su estado local con esta respuesta, así que debe conservar `pedidos`.
+    include: {
+      ...includeCliente,
+      pedidos: { orderBy: { fechaHoraCreacion: 'desc' } },
+    },
   })
   res.json(actualizado)
 })

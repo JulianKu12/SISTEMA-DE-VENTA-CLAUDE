@@ -193,6 +193,21 @@ try {
   const disSi = await req('PATCH', `/api/productos/${p5.data.id}/disponibilidad`, { disponibleHoy: true })
   ok(disSi.status === 200 && !disSi.data.aviso, 'volver a disponible_hoy=true sin aviso')
 
+  console.log('== Reactivar combo Suspendido (Bug 5) ==')
+  // Tras volver disponible el producto, el combo sigue Suspendido hasta
+  // reactivarse explícitamente (docs/03: suspensión automática, reactivación manual).
+  const estadoC3b = await prisma.combo.findUnique({ where: { id: c3.data.id } })
+  ok(estadoC3b.estado === 'Suspendido', 'combo permanece Suspendido tras volver disponible su producto')
+  const reactC3 = await req('PATCH', `/api/combos/${c3.data.id}/reactivar`, {})
+  ok(reactC3.status === 200 && reactC3.data.combo.estado === 'Activo', 'reactivar combo Suspendido -> Activo')
+  const reactC3DeNuevo = await req('PATCH', `/api/combos/${c3.data.id}/reactivar`, {})
+  ok(reactC3DeNuevo.status === 400, 'reactivar combo ya Activo -> 400')
+  // Con producto aún no disponible, reactivar debe rechazar (409).
+  const disNo2 = await req('PATCH', `/api/productos/${p5.data.id}/disponibilidad`, { disponibleHoy: false })
+  const reactC3Bloqueado = await req('PATCH', `/api/combos/${c3.data.id}/reactivar`, {})
+  ok(reactC3Bloqueado.status === 409, 'reactivar combo con producto no disponible -> 409')
+  const disSi2 = await req('PATCH', `/api/productos/${p5.data.id}/disponibilidad`, { disponibleHoy: true })
+
   console.log('== Desactivar producto en combo ==')
   const p6 = await req('POST', '/api/productos', {
     nombre: 'Jugo',
@@ -229,8 +244,8 @@ try {
     await tx.venta_Producto_Modificador.deleteMany()
     await tx.venta_Producto_Mitad.deleteMany()
     await tx.venta_Producto.deleteMany()
-    await tx.venta.deleteMany()
     await tx.devolucion.deleteMany()
+    await tx.venta.deleteMany()
     await tx.gasto.deleteMany()
     await tx.combo_Producto.deleteMany()
     await tx.combo.deleteMany()
