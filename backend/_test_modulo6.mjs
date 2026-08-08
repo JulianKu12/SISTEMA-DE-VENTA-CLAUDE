@@ -134,7 +134,9 @@ try {
   ok(p2.data.referenciaLibre === 'calle falsa 123, junto al parque', 'referencia libre (texto) almacenada en el pedido')
   ok(p2.data.referenciaId === null, 'sin referenciaId (cliente no registrado)')
   ok(p2.data.venta === null, 'aun sin venta')
-  ok((await stockProducto(coca.id)) === 8, 'stock intacto mientras no se paga')
+  // Rediseño (docs/04 + docs/06): la reserva de inventario se hace AL CREAR
+  // el pedido, no al pagar. Tras p1 (2 coca) y p2 (1 coca) quedan 7.
+  ok((await stockProducto(coca.id)) === 7, 'inventario bloqUEADO al crear (coca 8->7)')
 
   console.log('== Pedido 3: Telefono + Para_recoger (pendiente de pago) ==')
   const p3 = await req('POST', '/api/pedidos', {
@@ -225,10 +227,12 @@ try {
   )
 
   console.log('== Pago diferido (P2) ==')
+  // El pago re-vincula la reserva a la venta; no vuelve a descontar stock.
+  const stockAntesPago2 = await stockProducto(coca.id)
   const pagar2 = await req('PATCH', `/api/pedidos/${p2.data.id}/estado-pago`, { estadoPago: 'Pagado', usuarioId: admin.id })
   ok(pagar2.status === 200 && pagar2.data.pedido.estadoPago === 'Pagado', 'P2 pasa a Pagado')
   ok(pagar2.data.venta && pagar2.data.venta.total === 20, 'venta generada con total 20 (incluye envio)')
-  ok((await stockProducto(coca.id)) === 7, 'stock coca 8->7 tras pago de P2')
+  ok((await stockProducto(coca.id)) === stockAntesPago2, 'pagar NO descuenta de nuevo (reserva hecha al crear; coca fija en ' + stockAntesPago2 + ')')
 
   console.log('== Asignacion de repartidor (P4, repartidor unico activo) ==')
   // Secuencia estricta: Pendiente -> En_preparacion -> Enviado (docs/06).
@@ -293,9 +297,9 @@ try {
   ok(pCombo.data.total === 35, 'pedido combo total 35 (precio del combo, no suma de productos)')
   ok(pCombo.data.venta && pCombo.data.venta.total === 35, 'venta generada del combo total 35')
   ok(pCombo.data.productos.length === 2, 'pedido combo expandido en 2 filas (una por producto)')
-  ok((await stockProducto(coca.id)) === 8, 'combo descuenta reventa (coca 9->8)')
+  ok((await stockProducto(coca.id)) === 5, 'combo reserva reventa al CREAR (coca 6->5)')
   const stockHarina6 = await prisma.movimiento_Inventario.aggregate({ _sum: { cantidad: true }, where: { ingredienteId: harina.id } })
-  ok(stockHarina6._sum.cantidad === 8, 'combo descuenta receta (harina 10->8)')
+  ok(stockHarina6._sum.cantidad === 6, 'combo reserva la receta al CREAR (harina 8->6)')
 
   // Telefono + Para_recoger queda Pendiente_pago; al pagar se genera la Venta
   // reconstruyendo el combo desde las filas del Pedido_Producto.
@@ -310,11 +314,12 @@ try {
   })
   ok(pCombo2.status === 201 && pCombo2.data.estadoPago === 'Pendiente_pago', 'pedido combo Telefono -> Pendiente_pago')
   ok(pCombo2.data.venta === null, 'sin venta hasta pagar')
+  const cocaAntesPagoCombo2 = await stockProducto(coca.id)
   const pagarCombo2 = await req('PATCH', `/api/pedidos/${pCombo2.data.id}/estado-pago`, { estadoPago: 'Pagado', usuarioId: admin.id })
   ok(pagarCombo2.status === 200 && pagarCombo2.data.venta.total === 35, 'pago diferido del combo -> venta total 35')
-  ok((await stockProducto(coca.id)) === 7, 'coca 8->7 tras pagar combo diferido')
+  ok((await stockProducto(coca.id)) === cocaAntesPagoCombo2, 'pagar el combo NO vuelve a descontar la reventa (coca ' + cocaAntesPagoCombo2 + ')')
   const stockHarina7 = await prisma.movimiento_Inventario.aggregate({ _sum: { cantidad: true }, where: { ingredienteId: harina.id } })
-  ok(stockHarina7._sum.cantidad === 6, 'harina 8->6 tras pagar combo diferido')
+  ok(stockHarina7._sum.cantidad === 4, 'harina reservada al CREAR el combo (8->6->4)')
 
   console.log('== Drift de receta: cancelación revierte EXACTO (no recalcula) ==')
   const pDrift = await req('POST', '/api/pedidos', {
@@ -324,7 +329,7 @@ try {
   })
   ok(pDrift.status === 201 && pDrift.data.estadoPago === 'Pagado', 'pedido torta pagado al capturar')
   const stockHarina8 = await prisma.movimiento_Inventario.aggregate({ _sum: { cantidad: true }, where: { ingredienteId: harina.id } })
-  ok(stockHarina8._sum.cantidad === 4, 'torta consume 2 harina (6->4)')
+  ok(stockHarina8._sum.cantidad === 2, 'torta reserva 2 harina al CREAR (8->6->4->2)')
   // La receta cambia DESPUÉS de la venta: hoy pediría 5 harina por unidad.
   await prisma.producto_Ingrediente.update({
     where: { productoId_ingredienteId: { productoId: torta.id, ingredienteId: harina.id } },
@@ -336,7 +341,7 @@ try {
   })
   ok(cancelDrift.status === 200 && cancelDrift.data.movimientosCancelacionRegreso === 1, 'cancelacion revierte los movimientos exactos')
   const stockHarina9 = await prisma.movimiento_Inventario.aggregate({ _sum: { cantidad: true }, where: { ingredienteId: harina.id } })
-  ok(stockHarina9._sum.cantidad === 6, 'se revierte EXACTO (2, no la receta nueva de 5) -> harina 6')
+  ok(stockHarina9._sum.cantidad === 4, 'se revierte EXACTO (2, no la receta nueva de 5) -> harina 4')
 
   console.log('== usar_disponible: cancelar pedido revierte EXACTO el parcial ==')
   const capH2 = await prisma.ingrediente.create({ data: { nombre: 'CapH2', unidadMedida: 'kg', stockActual: 5, stockMinimoAlerta: 0 } })
