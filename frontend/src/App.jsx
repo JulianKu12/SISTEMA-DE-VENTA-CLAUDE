@@ -6,10 +6,10 @@ import PedidosPage from './pages/PedidosPage'
 import DetallePedidoPage from './pages/DetallePedidoPage'
 import ConfiguracionMenuPage from './pages/ConfiguracionMenuPage'
 import RepartidoresPage from './pages/RepartidoresPage'
-import PlaceholderPage from './pages/PlaceholderPage'
 import CajaPage from './pages/CajaPage'
 import ClientesPage from './pages/ClientesPage'
 import InventarioPage from './pages/InventarioPage'
+import ReportesPage from './pages/ReportesPage'
 
 function RutaProtegida({ children }) {
   const { token } = useAuth()
@@ -97,7 +97,7 @@ function App() {
         path="/reportes"
         element={
           <RutaProtegida>
-            <PlaceholderPage titulo="Reportes" />
+            <ReportesPage />
           </RutaProtegida>
         }
       />

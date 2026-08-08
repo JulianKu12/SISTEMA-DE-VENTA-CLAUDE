@@ -639,8 +639,12 @@ export const listarVentas = asyncHandler(async (req, res) => {
     where.fechaHora = { ...(where.fechaHora ?? {}), gte: d }
   }
   if (fechaHasta !== undefined) {
+    // "Hasta" se interpreta como fin de día (inclusivo): si el valor es solo
+    // fecha (YYYY-MM-DD) se extiende a las 23:59:59.999 de ese mismo día, de
+    // modo que el filtro incluya todas las ventas de la fecha límite.
     const d = new Date(fechaHasta)
     if (Number.isNaN(d.getTime())) throw new HttpError(400, 'fechaHasta inválida (ISO 8601)')
+    if (/^\d{4}-\d{2}-\d{2}$/.test(fechaHasta)) d.setUTCHours(23, 59, 59, 999)
     where.fechaHora = { ...(where.fechaHora ?? {}), lte: d }
   }
   if (diaOperativoId !== undefined) {
