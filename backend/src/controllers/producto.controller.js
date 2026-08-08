@@ -1,6 +1,7 @@
 import prisma from '../models/prisma.js'
 import { asyncHandler } from '../utils/asyncHandler.js'
 import { HttpError } from '../utils/httpError.js'
+import { resolverUsuario } from '../utils/usuario.js'
 import { TIPOS_PRODUCTO, esEnumValido } from '../utils/enums.js'
 
 const includeCompleto = {
@@ -57,13 +58,16 @@ export const obtener = asyncHandler(async (req, res) => {
 })
 
 export const crear = asyncHandler(async (req, res) => {
-  const { nombre, precio, tipo, permiteMitadYMitad, disponibleHoy, ingredientes } = req.body
+  const { nombre, precio, tipo, permiteMitadYMitad, disponibleHoy, ingredientes, stockInicial, costo } = req.body
   if (!nombre || typeof nombre !== 'string') throw new HttpError(400, 'El campo nombre es obligatorio')
   if (typeof precio !== 'number') throw new HttpError(400, 'El campo precio debe ser numérico')
   if (!esEnumValido(tipo, TIPOS_PRODUCTO)) throw new HttpError(400, 'tipo inválido')
 
   let receta = null
   if (tipo === 'Con_receta') {
+    if (stockInicial != null || costo != null) {
+      throw new HttpError(400, 'stockInicial y costo solo aplican a productos de reventa directa')
+    }
     receta = await validarReceta(ingredientes)
   } else if (tipo === 'Reventa_directa') {
     if (Array.isArray(ingredientes) && ingredientes.length > 0) {
@@ -72,8 +76,20 @@ export const crear = asyncHandler(async (req, res) => {
     if (permiteMitadYMitad === true) {
       throw new HttpError(400, 'permiteMitadYMitad solo aplica a productos con receta')
     }
+    if (stockInicial != null && (typeof stockInicial !== 'number' || stockInicial <= 0)) {
+      throw new HttpError(400, 'stockInicial debe ser un número mayor a 0')
+    }
+    if (costo != null) {
+      if (typeof costo !== 'number' || costo < 0) {
+        throw new HttpError(400, 'costo debe ser un número mayor o igual a 0')
+      }
+      if (stockInicial == null) {
+        throw new HttpError(400, 'El costo requiere un stockInicial del producto')
+      }
+    }
   }
 
+  const usuarioId = resolverUsuario(req)
   const creado = await prisma.$transaction(async (tx) => {
     const nuevo = await tx.producto.create({
       data: {
@@ -88,6 +104,28 @@ export const crear = asyncHandler(async (req, res) => {
       await tx.producto_Ingrediente.createMany({
         data: receta.map((r) => ({ productoId: nuevo.id, ingredienteId: r.ingredienteId, cantidad: r.cantidad })),
       })
+    }
+    // Reventa directa con stock inicial: la Entrada de inventario se genera
+    // automáticamente al crear el producto (igual que con los Ingredientes) y,
+    // si se capturó el costo, también el Gasto de esa compra.
+    if (tipo === 'Reventa_directa' && stockInicial != null) {
+      await tx.movimiento_Inventario.create({
+        data: { productoId: nuevo.id, tipoMovimiento: 'Entrada', cantidad: stockInicial },
+      })
+      if (costo != null) {
+        const dia = await tx.dia_Operativo.findFirst({ where: { estado: 'Abierto' } })
+        await tx.gasto.create({
+          data: {
+            concepto: `Entrada de inventario: ${nuevo.nombre}`,
+            monto: costo,
+            categoria: 'Insumos',
+            metodoPago: 'Efectivo',
+            origen: 'Automatico_por_entrada_inventario',
+            diaOperativoId: dia?.id ?? null,
+            usuarioId,
+          },
+        })
+      }
     }
     return nuevo
   })

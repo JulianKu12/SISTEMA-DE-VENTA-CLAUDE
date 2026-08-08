@@ -90,46 +90,57 @@ export const cerrarCaja = asyncHandler(async (req, res) => {
     // Cálculo del efectivo esperado (docs/05):
     //   fondo_inicial + Venta(total Efectivo, no_cobrar=false)
     //   - Gasto(monto Efectivo) - Devolucion(monto Efectivo_de_caja)
-    const [aggVentas, aggGastos, aggDevoluciones, aggTarjeta, aggTransferencia] = await Promise.all([
-      tx.venta.aggregate({
-        _sum: { total: true },
-        where: {
-          diaOperativoId: dia.id,
-          metodoPago: 'Efectivo',
-          noCobrar: false,
-          esVentaPreviaApertura: false,
-        },
-      }),
-      tx.gasto.aggregate({
-        _sum: { monto: true },
-        where: { diaOperativoId: dia.id, metodoPago: 'Efectivo' },
-      }),
-      tx.devolucion.aggregate({
-        _sum: { monto: true },
-        where: { diaOperativoId: dia.id, medioDevolucion: 'Efectivo_de_caja' },
-      }),
-      tx.venta.aggregate({
-        _sum: { total: true },
-        where: {
-          diaOperativoId: dia.id,
-          metodoPago: 'Tarjeta',
-          noCobrar: false,
-          esVentaPreviaApertura: false,
-        },
-      }),
-      tx.venta.aggregate({
-        _sum: { total: true },
-        where: {
-          diaOperativoId: dia.id,
-          metodoPago: 'Transferencia',
-          noCobrar: false,
-          esVentaPreviaApertura: false,
-        },
-      }),
-    ])
+    const [aggVentas, aggGastos, aggGastosTarjeta, aggGastosTransferencia, aggDevoluciones, aggTarjeta, aggTransferencia] =
+      await Promise.all([
+        tx.venta.aggregate({
+          _sum: { total: true },
+          where: {
+            diaOperativoId: dia.id,
+            metodoPago: 'Efectivo',
+            noCobrar: false,
+            esVentaPreviaApertura: false,
+          },
+        }),
+        tx.gasto.aggregate({
+          _sum: { monto: true },
+          where: { diaOperativoId: dia.id, metodoPago: 'Efectivo' },
+        }),
+        tx.gasto.aggregate({
+          _sum: { monto: true },
+          where: { diaOperativoId: dia.id, metodoPago: 'Tarjeta' },
+        }),
+        tx.gasto.aggregate({
+          _sum: { monto: true },
+          where: { diaOperativoId: dia.id, metodoPago: 'Transferencia' },
+        }),
+        tx.devolucion.aggregate({
+          _sum: { monto: true },
+          where: { diaOperativoId: dia.id, medioDevolucion: 'Efectivo_de_caja' },
+        }),
+        tx.venta.aggregate({
+          _sum: { total: true },
+          where: {
+            diaOperativoId: dia.id,
+            metodoPago: 'Tarjeta',
+            noCobrar: false,
+            esVentaPreviaApertura: false,
+          },
+        }),
+        tx.venta.aggregate({
+          _sum: { total: true },
+          where: {
+            diaOperativoId: dia.id,
+            metodoPago: 'Transferencia',
+            noCobrar: false,
+            esVentaPreviaApertura: false,
+          },
+        }),
+      ])
 
     const ventasEfectivo = aggVentas._sum.total ?? 0
     const gastosEfectivo = aggGastos._sum.monto ?? 0
+    const gastosTarjeta = aggGastosTarjeta._sum.monto ?? 0
+    const gastosTransferencia = aggGastosTransferencia._sum.monto ?? 0
     const devolucionesEfectivoCaja = aggDevoluciones._sum.monto ?? 0
 
     const efectivoEsperado = dia.fondoInicial + ventasEfectivo - gastosEfectivo - devolucionesEfectivoCaja
@@ -164,6 +175,8 @@ export const cerrarCaja = asyncHandler(async (req, res) => {
       ventasTarjeta: aggTarjeta._sum.total ?? 0,
       ventasTransferencia: aggTransferencia._sum.total ?? 0,
       gastosEfectivo,
+      gastosTarjeta,
+      gastosTransferencia,
       devolucionesEfectivoCaja,
       pedidosPendientes: countPendientes,
       pedidosEntregadosPendientes: entregadosPendientes._sum.total ?? 0,
@@ -185,6 +198,13 @@ export const cerrarCaja = asyncHandler(async (req, res) => {
       transferencia: resultado.ventasTransferencia,
     },
     gastosEfectivo: resultado.gastosEfectivo,
+    // Informativos, no restan del efectivo_esperado (docs/05): los gastos
+    // pagados con Tarjeta/Transferencia no se pueden contar en caja chica.
+    gastos: {
+      efectivo: resultado.gastosEfectivo,
+      tarjeta: resultado.gastosTarjeta,
+      transferencia: resultado.gastosTransferencia,
+    },
     devolucionesEfectivoCaja: resultado.devolucionesEfectivoCaja,
     // Aviso informativo: pedidos sin resolver al momento de cerrar.
     pedidosPendientesPago: {

@@ -536,6 +536,18 @@ function DetallePedidoPage() {
 
   const lineas = useMemo(() => (pedido ? construirLineas(pedido) : []), [pedido])
 
+  const productosNoDisponibles = useMemo(() => {
+    if (!pedido) return []
+    const vistos = new Map()
+    for (const pp of pedido.productos || []) {
+      const disponible = pp.producto?.disponibleHoy === true && pp.producto?.estado !== 'Inactivo'
+      if (!disponible && pp.producto && !vistos.has(pp.productoId)) {
+        vistos.set(pp.productoId, pp.producto.nombre || `#${pp.productoId}`)
+      }
+    }
+    return [...vistos.values()]
+  }, [pedido])
+
   const estado = pedido ? CONFIG_ESTADOS[pedido.estadoPreparacion] || CONFIG_ESTADOS.Cancelado : null
   const pago = pedido ? CONFIG_PAGO[pedido.estadoPago] || CONFIG_PAGO.Pendiente_pago : null
 
@@ -837,6 +849,22 @@ function DetallePedidoPage() {
         {notificacion && (
           <div className="rounded-2xl bg-green-500/10 px-4 py-3 text-sm font-medium text-green-700">
             {notificacion}
+          </div>
+        )}
+        {(enPendiente || enPreparacion) && productosNoDisponibles.length > 0 && (
+          <div className="space-y-1.5 rounded-2xl bg-amber-500/10 px-4 py-3">
+            <p className="text-xs font-bold uppercase tracking-wide text-amber-600">
+              Producto no disponible
+            </p>
+            <p className="text-sm text-ink">
+              No podrás marcar este pedido como Pagado hasta que vuelvan a estar
+              disponibles:
+            </p>
+            <ul className="list-inside list-disc space-y-0.5 text-sm text-amber-700">
+              {productosNoDisponibles.map((nombre) => (
+                <li key={nombre}>{nombre}</li>
+              ))}
+            </ul>
           </div>
         )}
 

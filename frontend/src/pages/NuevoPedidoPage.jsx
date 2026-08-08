@@ -482,6 +482,7 @@ function NuevoPedidoPage() {
   )
 
   const tieneConfiguracion = (producto) =>
+    producto.tipo === 'Con_receta' ||
     producto.permiteMitadYMitad ||
     (producto.productoModificadores || []).some((pm) => pm.modificador?.estado === 'Activo')
 

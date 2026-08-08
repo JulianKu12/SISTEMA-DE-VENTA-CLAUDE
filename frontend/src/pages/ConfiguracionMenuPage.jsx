@@ -357,6 +357,8 @@ function ModalFormularioProducto({ producto, ingredientes, onCerrar, onGuardar }
   const [precio, setPrecio] = useState(producto ? String(producto.precio) : '')
   const [tipo, setTipo] = useState(producto?.tipo ?? 'Con_receta')
   const [permiteMitadYMitad, setPermiteMitadYMitad] = useState(producto?.permiteMitadYMitad ?? false)
+  const [stockInicial, setStockInicial] = useState('')
+  const [costo, setCosto] = useState('')
   const [filas, setFilas] = useState(() => {
     if (producto?.productoIngredientes?.length) {
       return producto.productoIngredientes.map((pi) => ({
@@ -389,6 +391,16 @@ function ModalFormularioProducto({ producto, ingredientes, onCerrar, onGuardar }
         cantidad: Number(f.cantidad),
       }))
       payload.permiteMitadYMitad = permiteMitadYMitad
+    } else if (tipo === 'Reventa_directa' && esNuevo) {
+      const stockNum = stockInicial === '' ? null : Number(stockInicial)
+      const costoNum = costo === '' ? null : Number(costo)
+      if (stockNum != null && stockNum <= 0) return setError('El stock inicial debe ser mayor a 0')
+      if (costoNum != null && costoNum < 0) return setError('El costo debe ser mayor o igual a 0')
+      if (costoNum != null && stockNum == null) {
+        return setError('El costo requiere capturar un stock inicial para este producto')
+      }
+      if (stockNum != null) payload.stockInicial = stockNum
+      if (costoNum != null) payload.costo = costoNum
     }
 
     setEnviando(true)
@@ -463,6 +475,42 @@ function ModalFormularioProducto({ producto, ingredientes, onCerrar, onGuardar }
             })}
           </div>
         </div>
+        {esNuevo && tipo === 'Reventa_directa' && (
+          <>
+            <div className="space-y-1.5">
+              <label className="block text-sm font-semibold text-ink" htmlFor="prod-stock">
+                Stock inicial (opcional)
+              </label>
+              <input
+                id="prod-stock"
+                className={CLASE_INPUT}
+                type="number"
+                min="0"
+                step="any"
+                inputMode="decimal"
+                value={stockInicial}
+                onChange={(e) => setStockInicial(e.target.value)}
+                placeholder="Ej. 20"
+              />
+            </div>
+            <div className="space-y-1.5">
+              <label className="block text-sm font-semibold text-ink" htmlFor="prod-costo">
+                Costo de compra (opcional)
+              </label>
+              <input
+                id="prod-costo"
+                className={CLASE_INPUT}
+                type="number"
+                min="0"
+                step="any"
+                inputMode="decimal"
+                value={costo}
+                onChange={(e) => setCosto(e.target.value)}
+                placeholder="0.00"
+              />
+            </div>
+          </>
+        )}
         {tipo === 'Con_receta' && (
           <>
             <div className="space-y-2">

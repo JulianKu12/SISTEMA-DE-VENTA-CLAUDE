@@ -591,12 +591,20 @@ function CajaPage({ pestanaInicial = 'caja' }) {
       const gastosEfectivo = gastosDia
         .filter((g) => g.metodoPago === 'Efectivo')
         .reduce((a, g) => a + g.monto, 0)
+      const gastosTarjeta = gastosDia
+        .filter((g) => g.metodoPago === 'Tarjeta')
+        .reduce((a, g) => a + g.monto, 0)
+      const gastosTransferencia = gastosDia
+        .filter((g) => g.metodoPago === 'Transferencia')
+        .reduce((a, g) => a + g.monto, 0)
       setResumen({
         totalVentas: ventasNormales.length,
         ventasEfectivo,
         ventasTarjeta,
         ventasTransferencia,
         gastosEfectivo,
+        gastosTarjeta,
+        gastosTransferencia,
         esperado: dia.fondoInicial + ventasEfectivo - gastosEfectivo,
       })
     } catch (err) {
@@ -865,6 +873,8 @@ function CajaPage({ pestanaInicial = 'caja' }) {
             <FilaResumen etiqueta="Tarjeta" valor={formatearMonto(resumen.ventasTarjeta)} />
             <FilaResumen etiqueta="Transferencia" valor={formatearMonto(resumen.ventasTransferencia)} />
             <FilaResumen etiqueta="Gastos en efectivo" valor={formatearMonto(resumen.gastosEfectivo)} />
+            <FilaResumen etiqueta="Gastos con tarjeta" valor={formatearMonto(resumen.gastosTarjeta)} />
+            <FilaResumen etiqueta="Gastos por transferencia" valor={formatearMonto(resumen.gastosTransferencia)} />
             <FilaResumen
               etiqueta="Efectivo esperado"
               valor={formatearMonto(resumen.esperado)}
@@ -901,6 +911,8 @@ function CajaPage({ pestanaInicial = 'caja' }) {
             <FilaResumen etiqueta="Ventas con tarjeta" valor={formatearMonto(resultadoCierre.ventas?.tarjeta)} />
             <FilaResumen etiqueta="Ventas por transferencia" valor={formatearMonto(resultadoCierre.ventas?.transferencia)} />
             <FilaResumen etiqueta="Gastos en efectivo" valor={formatearMonto(resultadoCierre.gastosEfectivo)} />
+            <FilaResumen etiqueta="Gastos con tarjeta" valor={formatearMonto(resultadoCierre.gastos?.tarjeta)} />
+            <FilaResumen etiqueta="Gastos por transferencia" valor={formatearMonto(resultadoCierre.gastos?.transferencia)} />
           </div>
           {(resultadoCierre.pedidosPendientesPago?.cantidad || 0) > 0 && (
             <div className="mt-4 rounded-2xl bg-amber-500/10 px-4 py-3 text-sm font-medium text-amber-600">
