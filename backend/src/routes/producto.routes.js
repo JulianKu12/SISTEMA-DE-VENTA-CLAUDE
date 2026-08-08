@@ -6,6 +6,7 @@ import {
   actualizar,
   actualizarDisponibilidad,
   desactivar,
+  reactivar,
   eliminar,
   asociarModificador,
   desasociarModificador,
@@ -22,6 +23,7 @@ router.post('/', crear)
 router.patch('/:id', actualizar)
 router.patch('/:id/disponibilidad', actualizarDisponibilidad)
 router.patch('/:id/desactivar', desactivar)
+router.patch('/:id/reactivar', reactivar)
 router.delete('/:id', eliminar)
 router.post('/:productoId/modificadores', asociarModificador)
 router.delete('/:productoId/modificadores/:modificadorId', desasociarModificador)

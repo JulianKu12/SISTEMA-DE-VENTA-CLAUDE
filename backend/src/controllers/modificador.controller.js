@@ -100,6 +100,19 @@ export const desactivar = asyncHandler(async (req, res) => {
   res.json(actualizado)
 })
 
+export const reactivar = asyncHandler(async (req, res) => {
+  const { id } = req.params
+  const existente = await prisma.modificador.findUnique({ where: { id: Number(id) } })
+  if (!existente) throw new HttpError(404, 'Modificador no encontrado')
+  if (existente.estado === 'Activo') throw new HttpError(400, 'El modificador ya está activo')
+
+  const actualizado = await prisma.modificador.update({
+    where: { id: existente.id },
+    data: { estado: 'Activo' },
+  })
+  res.json(actualizado)
+})
+
 export const eliminar = asyncHandler(async (req, res) => {
   const { id } = req.params
   const existente = await prisma.modificador.findUnique({ where: { id: Number(id) } })

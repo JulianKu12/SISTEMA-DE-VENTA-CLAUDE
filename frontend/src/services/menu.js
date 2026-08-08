@@ -57,6 +57,12 @@ export async function desactivarIngrediente(id, opcion) {
   return { status: respuesta.status, datos }
 }
 
+export async function reactivarIngrediente(id) {
+  const respuesta = await peticion(`/api/ingredientes/${id}/reactivar`, { metodo: 'PATCH' })
+  if (!respuesta.ok) throw new Error(await extraerMensaje(respuesta, 'No se pudo reactivar el ingrediente'))
+  return respuesta.json()
+}
+
 export async function eliminarIngrediente(id) {
   const respuesta = await peticion(`/api/ingredientes/${id}`, { metodo: 'DELETE' })
   if (!respuesta.ok) throw new Error(await extraerMensaje(respuesta, 'No se pudo eliminar el ingrediente'))
@@ -99,7 +105,105 @@ export async function desactivarProducto(id) {
   return respuesta.json()
 }
 
+export async function reactivarProducto(id) {
+  const respuesta = await peticion(`/api/productos/${id}/reactivar`, { metodo: 'PATCH' })
+  if (!respuesta.ok) throw new Error(await extraerMensaje(respuesta, 'No se pudo reactivar el producto'))
+  return respuesta.json()
+}
+
 export async function eliminarProducto(id) {
   const respuesta = await peticion(`/api/productos/${id}`, { metodo: 'DELETE' })
   if (!respuesta.ok) throw new Error(await extraerMensaje(respuesta, 'No se pudo eliminar el producto'))
+}
+
+export async function asociarModificadorAProducto(productoId, modificadorId) {
+  const respuesta = await peticion(`/api/productos/${productoId}/modificadores`, {
+    metodo: 'POST',
+    body: { modificadorId },
+  })
+  if (!respuesta.ok) throw new Error(await extraerMensaje(respuesta, 'No se pudo asociar el modificador al producto'))
+  return respuesta.json()
+}
+
+export async function desasociarModificadorDeProducto(productoId, modificadorId) {
+  const respuesta = await peticion(`/api/productos/${productoId}/modificadores/${modificadorId}`, { metodo: 'DELETE' })
+  if (!respuesta.ok) throw new Error(await extraerMensaje(respuesta, 'No se pudo desasociar el modificador del producto'))
+}
+
+// ---------------------------------------------------------------------------
+// Modificadores
+// ---------------------------------------------------------------------------
+
+export async function obtenerModificadores() {
+  const respuesta = await peticion('/api/modificadores')
+  if (!respuesta.ok) throw new Error(await extraerMensaje(respuesta, 'No se pudieron cargar los modificadores'))
+  return respuesta.json()
+}
+
+export async function crearModificador(payload) {
+  const respuesta = await peticion('/api/modificadores', { metodo: 'POST', body: payload })
+  if (!respuesta.ok) throw new Error(await extraerMensaje(respuesta, 'No se pudo crear el modificador'))
+  return respuesta.json()
+}
+
+export async function actualizarModificador(id, payload) {
+  const respuesta = await peticion(`/api/modificadores/${id}`, { metodo: 'PATCH', body: payload })
+  if (!respuesta.ok) throw new Error(await extraerMensaje(respuesta, 'No se pudo actualizar el modificador'))
+  return respuesta.json()
+}
+
+export async function desactivarModificador(id) {
+  const respuesta = await peticion(`/api/modificadores/${id}/desactivar`, { metodo: 'PATCH' })
+  if (!respuesta.ok) throw new Error(await extraerMensaje(respuesta, 'No se pudo desactivar el modificador'))
+  return respuesta.json()
+}
+
+export async function reactivarModificador(id) {
+  const respuesta = await peticion(`/api/modificadores/${id}/reactivar`, { metodo: 'PATCH' })
+  if (!respuesta.ok) throw new Error(await extraerMensaje(respuesta, 'No se pudo reactivar el modificador'))
+  return respuesta.json()
+}
+
+export async function eliminarModificador(id) {
+  const respuesta = await peticion(`/api/modificadores/${id}`, { metodo: 'DELETE' })
+  if (!respuesta.ok) throw new Error(await extraerMensaje(respuesta, 'No se pudo eliminar el modificador'))
+}
+
+// ---------------------------------------------------------------------------
+// Combos
+// ---------------------------------------------------------------------------
+
+export async function obtenerCombos() {
+  const respuesta = await peticion('/api/combos')
+  if (!respuesta.ok) throw new Error(await extraerMensaje(respuesta, 'No se pudieron cargar los combos'))
+  return respuesta.json()
+}
+
+export async function crearCombo(payload) {
+  const respuesta = await peticion('/api/combos', { metodo: 'POST', body: payload })
+  if (!respuesta.ok) throw new Error(await extraerMensaje(respuesta, 'No se pudo crear el combo'))
+  return respuesta.json()
+}
+
+export async function actualizarCombo(id, payload) {
+  const respuesta = await peticion(`/api/combos/${id}`, { metodo: 'PATCH', body: payload })
+  if (!respuesta.ok) throw new Error(await extraerMensaje(respuesta, 'No se pudo actualizar el combo'))
+  return respuesta.json()
+}
+
+export async function desactivarCombo(id) {
+  const respuesta = await peticion(`/api/combos/${id}/desactivar`, { metodo: 'PATCH' })
+  if (!respuesta.ok) throw new Error(await extraerMensaje(respuesta, 'No se pudo desactivar el combo'))
+  return respuesta.json()
+}
+
+export async function reactivarCombo(id) {
+  const respuesta = await peticion(`/api/combos/${id}/reactivar`, { metodo: 'PATCH' })
+  if (!respuesta.ok) throw new Error(await extraerMensaje(respuesta, 'No se pudo reactivar el combo'))
+  return respuesta.json()
+}
+
+export async function eliminarCombo(id) {
+  const respuesta = await peticion(`/api/combos/${id}`, { metodo: 'DELETE' })
+  if (!respuesta.ok) throw new Error(await extraerMensaje(respuesta, 'No se pudo eliminar el combo'))
 }

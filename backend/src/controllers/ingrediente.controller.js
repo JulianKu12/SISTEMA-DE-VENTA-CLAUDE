@@ -189,6 +189,19 @@ export const desactivar = asyncHandler(async (req, res) => {
   throw new HttpError(400, 'Opción inválida')
 })
 
+export const reactivar = asyncHandler(async (req, res) => {
+  const { id } = req.params
+  const existente = await prisma.ingrediente.findUnique({ where: { id: Number(id) } })
+  if (!existente) throw new HttpError(404, 'Ingrediente no encontrado')
+  if (existente.estado === 'Activo') throw new HttpError(400, 'El ingrediente ya está activo')
+
+  const reactivado = await prisma.ingrediente.update({
+    where: { id: existente.id },
+    data: { estado: 'Activo' },
+  })
+  res.json({ mensaje: 'Ingrediente reactivado', ingrediente: reactivado })
+})
+
 export const eliminar = asyncHandler(async (req, res) => {
   const { id } = req.params
   const ingrediente = await prisma.ingrediente.findUnique({ where: { id: Number(id) } })

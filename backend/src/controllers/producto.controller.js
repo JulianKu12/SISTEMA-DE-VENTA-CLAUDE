@@ -222,6 +222,19 @@ export const desactivar = asyncHandler(async (req, res) => {
   })
 })
 
+export const reactivar = asyncHandler(async (req, res) => {
+  const { id } = req.params
+  const producto = await prisma.producto.findUnique({ where: { id: Number(id) } })
+  if (!producto) throw new HttpError(404, 'Producto no encontrado')
+  if (producto.estado === 'Activo') throw new HttpError(400, 'El producto ya está activo')
+
+  const actualizado = await prisma.producto.update({
+    where: { id: producto.id },
+    data: { estado: 'Activo' },
+  })
+  res.json({ mensaje: 'Producto reactivado', producto: actualizado })
+})
+
 export const eliminar = asyncHandler(async (req, res) => {
   const { id } = req.params
   const producto = await prisma.producto.findUnique({ where: { id: Number(id) } })

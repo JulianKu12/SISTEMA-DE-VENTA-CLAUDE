@@ -128,6 +128,29 @@ export const desactivar = asyncHandler(async (req, res) => {
   res.json(actualizado)
 })
 
+export const reactivar = asyncHandler(async (req, res) => {
+  const { id } = req.params
+  const combo = await prisma.combo.findUnique({ where: { id: Number(id) }, include: includeCompleto })
+  if (!combo) throw new HttpError(404, 'Combo no encontrado')
+  if (combo.estado === 'Activo') throw new HttpError(400, 'El combo ya está activo')
+
+  if (combo.estado === 'Suspendido') {
+    const tieneProductosNoDisponibles = combo.productos.some((cp) => !cp.producto.disponibleHoy)
+    if (tieneProductosNoDisponibles) {
+      throw new HttpError(
+        409,
+        'No se puede reactivar: el combo está suspendido porque alguno de sus productos no está disponible hoy. Reactiva primero los productos.'
+      )
+    }
+  }
+
+  const actualizado = await prisma.combo.update({
+    where: { id: combo.id },
+    data: { estado: 'Activo' },
+  })
+  res.json({ mensaje: 'Combo reactivado', combo: actualizado })
+})
+
 export const eliminar = asyncHandler(async (req, res) => {
   const { id } = req.params
   const combo = await prisma.combo.findUnique({ where: { id: Number(id) } })
