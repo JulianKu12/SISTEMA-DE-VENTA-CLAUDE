@@ -482,9 +482,9 @@ function FilaResumen({ etiqueta, valor, tono }) {
   )
 }
 
-function CajaPage() {
+function CajaPage({ pestanaInicial = 'caja' }) {
   const navigate = useNavigate()
-  const [pestana, setPestana] = useState('caja')
+  const [pestana, setPestana] = useState(pestanaInicial)
   const [estado, setEstado] = useState(null)
   const [gastos, setGastos] = useState(null)
   const [historial, setHistorial] = useState(null)

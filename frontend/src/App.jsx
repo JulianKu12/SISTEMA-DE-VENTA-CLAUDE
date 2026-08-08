@@ -7,6 +7,8 @@ import DetallePedidoPage from './pages/DetallePedidoPage'
 import ConfiguracionMenuPage from './pages/ConfiguracionMenuPage'
 import RepartidoresPage from './pages/RepartidoresPage'
 import PlaceholderPage from './pages/PlaceholderPage'
+import CajaPage from './pages/CajaPage'
+import ClientesPage from './pages/ClientesPage'
 
 function RutaProtegida({ children }) {
   const { token } = useAuth()
@@ -62,7 +64,7 @@ function App() {
         path="/clientes"
         element={
           <RutaProtegida>
-            <PlaceholderPage titulo="Clientes" />
+            <ClientesPage />
           </RutaProtegida>
         }
       />
@@ -78,7 +80,7 @@ function App() {
         path="/caja"
         element={
           <RutaProtegida>
-            <PlaceholderPage titulo="Caja" />
+            <CajaPage />
           </RutaProtegida>
         }
       />
@@ -86,7 +88,7 @@ function App() {
         path="/gastos"
         element={
           <RutaProtegida>
-            <PlaceholderPage titulo="Gastos" />
+            <CajaPage pestanaInicial="gastos" />
           </RutaProtegida>
         }
       />

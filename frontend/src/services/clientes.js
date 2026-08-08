@@ -20,6 +20,8 @@ async function peticionAutenticada(ruta, opciones = {}) {
     throw new Error(mensaje)
   }
 
+  if (respuesta.status === 204) return undefined
+
   return respuesta.json()
 }
 
@@ -34,9 +36,37 @@ export function crearCliente(datos) {
   })
 }
 
+export function actualizarCliente(clienteId, datos) {
+  return peticionAutenticada(`/api/clientes/${clienteId}`, {
+    method: 'PATCH',
+    body: JSON.stringify(datos),
+  })
+}
+
+export function eliminarCliente(clienteId) {
+  return peticionAutenticada(`/api/clientes/${clienteId}`, { method: 'DELETE' })
+}
+
+export function obtenerCliente(clienteId) {
+  return peticionAutenticada(`/api/clientes/${clienteId}`)
+}
+
 export function crearReferencia(clienteId, descripcion) {
   return peticionAutenticada(`/api/clientes/${clienteId}/referencias`, {
     method: 'POST',
     body: JSON.stringify({ descripcion }),
+  })
+}
+
+export function actualizarReferencia(referenciaId, datos) {
+  return peticionAutenticada(`/api/clientes/referencias/${referenciaId}`, {
+    method: 'PATCH',
+    body: JSON.stringify(datos),
+  })
+}
+
+export function eliminarReferencia(referenciaId) {
+  return peticionAutenticada(`/api/clientes/referencias/${referenciaId}`, {
+    method: 'DELETE',
   })
 }
