@@ -193,6 +193,7 @@ export const consultarStock = asyncHandler(async (req, res) => {
       nombre: i.nombre,
       unidadMedida: i.unidadMedida,
       stockActual: stockIngredientes.get(i.id) ?? 0,
+      stockMinimoAlerta: i.stockMinimoAlerta,
       estado: i.estado,
     })),
     productos: productosReventa.map((p) => ({

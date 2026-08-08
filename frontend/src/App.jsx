@@ -9,6 +9,7 @@ import RepartidoresPage from './pages/RepartidoresPage'
 import PlaceholderPage from './pages/PlaceholderPage'
 import CajaPage from './pages/CajaPage'
 import ClientesPage from './pages/ClientesPage'
+import InventarioPage from './pages/InventarioPage'
 
 function RutaProtegida({ children }) {
   const { token } = useAuth()
@@ -56,7 +57,7 @@ function App() {
         path="/inventario"
         element={
           <RutaProtegida>
-            <PlaceholderPage titulo="Inventario" />
+            <InventarioPage />
           </RutaProtegida>
         }
       />
