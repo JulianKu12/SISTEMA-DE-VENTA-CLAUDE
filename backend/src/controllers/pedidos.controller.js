@@ -10,11 +10,12 @@ import {
   METODOS_PAGO,
   esEnumValido,
 } from '../utils/enums.js'
-import { sincronizarStockIngrediente, stockDe } from '../utils/inventario.js'
+import { sincronizarStockIngrediente, stockDe, resolverNombreCuenta } from '../utils/inventario.js'
 import {
   procesarItem,
   calcularTotalItems,
-  ejecutarVenta,
+  descontarInventarioPedido,
+  crearVentaPedido,
 } from './ventas.controller.js'
 import { obtenerConfiguracion } from './config.controller.js'
 
@@ -52,19 +53,16 @@ function validarMetodoPago(tipo, metodoPago) {
   return metodoPago
 }
 
-// Convierte los Pedido_Producto ya guardados al formato que acepta ejecutarVenta,
-// conservando los precios/costos congelados al momento de capturar el pedido.
-// Los ítems de combo se reagrupan por comboId (el combo se guarda expandido en
-// varias filas, una por producto incluido) y se conserva el precio del combo.
-async function productosDesdePedido(tx, pedido) {
-  const productos = await tx.pedido_Producto.findMany({
-    where: { pedidoId: pedido.id },
-    include: { mitadYMitad: true, modificadores: true },
-  })
-
+// Construye el formato de ítems congelados (el que acepta
+// descontarInventarioPedido y crearVentaPedido) a partir de un conjunto de
+// Pedido_Producto, conservando los precios/costos congelados al capturar el
+// pedido. Los ítems de combo se reagrupan por comboId (el combo se guarda
+// expandido en varias filas, una por producto incluido) y se conserva el
+// precio del combo.
+async function itemsDesdePp(tx, filas) {
   const items = []
   const gruposCombo = new Map()
-  for (const pp of productos) {
+  for (const pp of filas) {
     if (pp.comboId) {
       if (!gruposCombo.has(pp.comboId)) {
         gruposCombo.set(pp.comboId, { comboPrecioCongelado: pp.comboPrecioCongelado, filas: [] })
@@ -108,6 +106,47 @@ async function productosDesdePedido(tx, pedido) {
   }
 
   return items
+}
+
+// Convierte los Pedido_Producto ya guardados de un pedido al formato de ítems
+// congelados.
+async function productosDesdePedido(tx, pedido) {
+  const productos = await tx.pedido_Producto.findMany({
+    where: { pedidoId: pedido.id },
+    include: { mitadYMitad: true, modificadores: true },
+  })
+  return itemsDesdePp(tx, productos)
+}
+
+// Cancela las reservas (Salida_venta) de uno o más Pedido_Producto al editar el
+// pedido (docs/04 + docs/06): crea los Cancelacion_regreso EXACTOS (sin
+// recalcular con la receta actual) y restaura el stock. La trazabilidad queda
+// por pedidoProductoId.
+async function cancelarReservasDePpIds(tx, ppIds, pedidoId) {
+  let movimientos = 0
+  for (const ppId of ppIds) {
+    const salidas = await tx.movimiento_Inventario.findMany({
+      where: { pedidoProductoId: ppId, tipoMovimiento: 'Salida_venta' },
+    })
+    for (const mv of salidas) {
+      await tx.movimiento_Inventario.create({
+        data: {
+          ...(mv.ingredienteId != null
+            ? { ingredienteId: mv.ingredienteId }
+            : { productoId: mv.productoId }),
+          tipoMovimiento: 'Cancelacion_regreso',
+          cantidad: -mv.cantidad,
+          referenciaId: pedidoId,
+          referenciaTipo: 'Cancelacion',
+        },
+      })
+      movimientos++
+      if (mv.ingredienteId != null) {
+        await sincronizarStockIngrediente(tx, mv.ingredienteId)
+      }
+    }
+  }
+  return movimientos
 }
 
 export const crearPedido = asyncHandler(async (req, res) => {
@@ -305,7 +344,24 @@ export const crearPedido = asyncHandler(async (req, res) => {
       }
     }
 
-    // Si inicia Pagado, generar la Venta inmediatamente (docs/04 y docs/06).
+    // Descuento de inventario SIEMPRE al crear el pedido (rediseño docs/04 y
+    // docs/06): se reservan los Movimiento_Inventario exactos (con
+    // modificadores, mitad y mitad y "usar disponible" ya aplicados), sin
+    // importar tipo, origen ni estado_pago inicial. Al pagarse, esos
+    // movimientos se re-vinculan a la Venta (nunca se duplica el descuento).
+    const reserva = await descontarInventarioPedido(tx, {
+      productos: itemsVenta,
+      pedidoId: pedido.id,
+      usarDisponible,
+    })
+    if (reserva.conflicto) {
+      const e = new HttpError(409, `No se pudo crear el pedido: ${reserva.mensaje}`)
+      e.faltantes = reserva.faltantes
+      throw e
+    }
+
+    // Si inicia Pagado, generar la Venta inmediatamente (docs/04 y docs/06):
+    // crea la Venta y re-vincula la reserva ya hecha (no descuenta de nuevo).
     let venta = null
     if (estadoPagoInicial === 'Pagado') {
       const dia = await tx.dia_Operativo.findFirst({ where: { estado: 'Abierto' } })
@@ -315,21 +371,15 @@ export const crearPedido = asyncHandler(async (req, res) => {
           'No hay una caja abierta (Dia_Operativo Abierto). Abre la caja para cobrar el pedido al capturarlo.'
         )
       }
-      const r = await ejecutarVenta(tx, {
+      const r = await crearVentaPedido(tx, {
         productos: itemsVenta,
         metodoPago: noCobrar ? 'Efectivo' : montoResuelto,
         noCobrar,
         pedidoId: pedido.id,
         costoEnvio: costoEnvio ?? 0,
-        usarDisponible,
         usuarioId,
         diaOperativoId: dia.id,
       })
-      if (r.conflicto) {
-        const e = new HttpError(409, `No se pudo cobrar el pedido: ${r.mensaje}`)
-        e.faltantes = r.faltantes
-        throw e
-      }
       venta = r.venta
     }
 
@@ -378,10 +428,13 @@ export const pedidosPorRepartidor = asyncHandler(async (req, res) => {
   res.json(pedidos)
 })
 
-// Pasa un pedido Pendiente_pago a Pagado, generando automáticamente la Venta.
+// Pasa un pedido Pendiente_pago a Pagado, generando automáticamente la Venta
+// (rediseño docs/04 + docs/06): la reserva de inventario ya se hizo al CREAR el
+// pedido, así que aquí solo se crea la Venta y se re-vinculan esos movimientos
+// (nunca se descuenta dos veces).
 export const cambiarEstadoPago = asyncHandler(async (req, res) => {
   const { id } = req.params
-  const { estadoPago, usarDisponible } = req.body
+  const { estadoPago } = req.body
   if (estadoPago !== 'Pagado') {
     throw new HttpError(400, 'Solo se permite pasar estado_pago a Pagado')
   }
@@ -406,21 +459,15 @@ export const cambiarEstadoPago = asyncHandler(async (req, res) => {
       throw new HttpError(409, 'No hay una caja abierta (Dia_Operativo Abierto). Abre la caja para registrar el pago.')
     }
 
-    const r = await ejecutarVenta(tx, {
+    const r = await crearVentaPedido(tx, {
       productos: await productosDesdePedido(tx, pedido),
       metodoPago: pedido.noCobrar ? 'Efectivo' : pedido.metodoPago,
       noCobrar: pedido.noCobrar,
       pedidoId: pedido.id,
       costoEnvio: pedido.costoEnvio ?? 0,
-      usarDisponible,
       usuarioId,
       diaOperativoId: dia.id,
     })
-    if (r.conflicto) {
-      const e = new HttpError(409, `No se pudo registrar el pago: ${r.mensaje}`)
-      e.faltantes = r.faltantes
-      throw e
-    }
 
     const actualizado = await tx.pedido.update({
       where: { id: pedido.id },
@@ -465,15 +512,20 @@ function estadosTransicionables(estadoPreparacion, tipo) {
   return TRANSICIONES[tipo]?.[estadoPreparacion] || []
 }
 
-// Regresa al inventario el consumo del pedido al cancelarse (solo aplica si el
-// pedido ya generó su Venta: si no, nada fue descontado aún). Revierten los
-// Movimiento_Inventario Salida_venta EXACTOS de esa Venta (con modificadores,
-// mitad y mitad, usar_disponible y combos ya aplicados) — nunca se recalcula
-// con la receta actual (evita el drift si cambió la receta).
+// Regresa al inventario el consumo del pedido al cancelarse. Desde el rediseño
+// (docs/04 + docs/06) el inventario se descuenta al CREAR el pedido (reserva),
+// así que la cancelación revierte SIEMPRE los Movimiento_Inventario
+// Salida_venta EXACTOS del pedido — estén re-vinculados a su Venta o aún
+// reservados (ventaProductoId null) — localizados por sus pedidoProductoId
+// (con modificadores, mitad y mitad, usar_disponible y combos ya aplicados);
+// nunca se recalcula con la receta actual (evita el drift si cambió la receta).
 async function regresarInventarioDePedido(tx, pedido) {
-  if (!pedido.ventaId) return 0
+  const ppIds = (
+    await tx.pedido_Producto.findMany({ where: { pedidoId: pedido.id }, select: { id: true } })
+  ).map((p) => p.id)
+  if (ppIds.length === 0) return 0
   const salidas = await tx.movimiento_Inventario.findMany({
-    where: { referenciaId: pedido.ventaId, referenciaTipo: 'Venta', tipoMovimiento: 'Salida_venta' },
+    where: { pedidoProductoId: { in: ppIds }, tipoMovimiento: 'Salida_venta' },
   })
   let movimientos = 0
   for (const mv of salidas) {
@@ -564,7 +616,9 @@ export const cambiarEstadoPreparacion = asyncHandler(async (req, res) => {
     // a Entregado con no_cobrar=true se marca el Pedido y se dispara en el
     // MISMO momento la generación de la Venta ya como no_cobrar=true (sin
     // requerir metodo_pago ni que un Administrador ejecute aparte el cambio de
-    // estado_pago).
+    // estado_pago). La reserva de inventario ya se hizo al crear el pedido
+    // (docs/04 + docs/06), así que crearVentaPedido solo re-vincula esos
+    // movimientos (nunca descuenta dos veces).
     let venta = null
     if (estadoPreparacion === 'Entregado' && noCobrar === true) {
       if (pedido.ventaId) {
@@ -577,7 +631,7 @@ export const cambiarEstadoPreparacion = asyncHandler(async (req, res) => {
           'No hay una caja abierta (Dia_Operativo Abierto). Abre la caja para registrar el "No cobrar".'
         )
       }
-      const r = await ejecutarVenta(tx, {
+      const r = await crearVentaPedido(tx, {
         productos: await productosDesdePedido(tx, pedido),
         metodoPago: 'Efectivo',
         noCobrar: true,
@@ -588,11 +642,6 @@ export const cambiarEstadoPreparacion = asyncHandler(async (req, res) => {
         usuarioId,
         diaOperativoId: dia.id,
       })
-      if (r.conflicto) {
-        const e = new HttpError(409, `No se pudo registrar el "No cobrar": ${r.mensaje}`)
-        e.faltantes = r.faltantes
-        throw e
-      }
       venta = r.venta
       data.noCobrar = true
       data.estadoPago = 'Pagado'
@@ -620,7 +669,7 @@ export const cambiarEstadoPreparacion = asyncHandler(async (req, res) => {
 // productos. Al quitar, se recalcula el total y el cambio_a_llevar.
 export const editarPedido = asyncHandler(async (req, res) => {
   const { id } = req.params
-  const { agregarProductos, quitarProductos, actualizarProductos } = req.body
+  const { agregarProductos, quitarProductos, actualizarProductos, montoReferenciaPago, usarDisponible } = req.body
 
   const resultado = await prisma.$transaction(async (tx) => {
     const pedido = await tx.pedido.findUnique({ where: { id: Number(id) } })
@@ -642,28 +691,13 @@ export const editarPedido = asyncHandler(async (req, res) => {
         })
         if (!pp) throw new HttpError(404, 'El pedidoProductoId indicado no pertenece a este pedido')
 
-        if (q.regresaAInventario && pedido.ventaId) {
+        if (q.regresaAInventario) {
           // Revertir EXACTAMENTE las Salida_venta de ese Pedido_Producto (con
-          // los descuentos reales ya aplicados), sin recalcular con la receta.
-          const salidas = await tx.movimiento_Inventario.findMany({
-            where: { pedidoProductoId: pp.id, tipoMovimiento: 'Salida_venta' },
-          })
-          for (const mv of salidas) {
-            await tx.movimiento_Inventario.create({
-              data: {
-                ...(mv.ingredienteId != null
-                  ? { ingredienteId: mv.ingredienteId }
-                  : { productoId: mv.productoId }),
-                tipoMovimiento: 'Cancelacion_regreso',
-                cantidad: -mv.cantidad,
-                referenciaId: pedido.id,
-                referenciaTipo: 'Cancelacion',
-              },
-            })
-            if (mv.ingredienteId != null) {
-              await sincronizarStockIngrediente(tx, mv.ingredienteId)
-            }
-          }
+          // los descuentos reales ya aplicados en la reserva al crear el
+          // pedido), sin recalcular con la receta. La reserva se hace SIEMPRE
+          // al crear el pedido (docs/04 + docs/06), esté o no vinculada a la
+          // Venta.
+          await cancelarReservasDePpIds(tx, [pp.id], pedido.id)
         }
         await tx.pedido_Producto_Modificador.deleteMany({ where: { pedidoProductoId: pp.id } })
         await tx.pedido_Producto_Mitad.deleteMany({ where: { pedidoProductoId: pp.id } })
@@ -672,15 +706,20 @@ export const editarPedido = asyncHandler(async (req, res) => {
     }
 
     // Actualizar cantidad de líneas existentes (fusión al agregar un ítem
-    // idéntico). Preserva precio/costo congelados de la línea original.
+    // idéntico). Preserva precio/costo congelados de la línea original. Desde el
+    // rediseño (docs/04 + docs/06) la reserva de inventario se hizo al crear el
+    // pedido, así que al cambiar la cantidad se cancelan las Salida_venta EXACTAS
+    // de las líneas afectadas y se reservan de nuevo con las cantidades nuevas.
     if (Array.isArray(actualizarProductos) && actualizarProductos.length > 0) {
       for (const u of actualizarProductos) {
         if (!Number.isInteger(u.cantidad) || u.cantidad < 1) {
           throw new HttpError(400, 'cada actualizarProducto requiere cantidad (entero >= 1)')
         }
+        let filas
         if (u.comboId != null) {
-          const filas = await tx.pedido_Producto.findMany({
+          filas = await tx.pedido_Producto.findMany({
             where: { pedidoId: pedido.id, comboId: Number(u.comboId) },
+            include: { mitadYMitad: true, modificadores: true },
           })
           if (filas.length === 0) {
             throw new HttpError(404, 'No hay líneas con ese comboId en este pedido')
@@ -692,14 +731,33 @@ export const editarPedido = asyncHandler(async (req, res) => {
         } else if (u.pedidoProductoId != null) {
           const pp = await tx.pedido_Producto.findFirst({
             where: { id: Number(u.pedidoProductoId), pedidoId: pedido.id },
+            include: { mitadYMitad: true, modificadores: true },
           })
           if (!pp) throw new HttpError(404, 'El pedidoProductoId indicado no pertenece a este pedido')
           await tx.pedido_Producto.update({
             where: { id: pp.id },
             data: { cantidad: u.cantidad },
           })
+          filas = [{ ...pp, cantidad: u.cantidad }]
         } else {
           throw new HttpError(400, 'cada actualizarProducto requiere comboId o pedidoProductoId')
+        }
+
+        // Ajustar la reserva de inventario de las líneas afectadas: se cancelan
+        // las Salida_venta EXACTAS previas y se reservan las cantidades nuevas.
+        await cancelarReservasDePpIds(tx, filas.map((f) => f.id), pedido.id)
+        const reserva = await descontarInventarioPedido(tx, {
+          productos: await itemsDesdePp(
+            tx,
+            filas.map((f) => ({ ...f, cantidad: u.cantidad }))
+          ),
+          pedidoId: pedido.id,
+          usarDisponible,
+        })
+        if (reserva.conflicto) {
+          const e = new HttpError(409, `No se pudo editar el pedido: ${reserva.mensaje}`)
+          e.faltantes = reserva.faltantes
+          throw e
         }
       }
     }
@@ -732,25 +790,32 @@ export const editarPedido = asyncHandler(async (req, res) => {
         const [tipo, id] = key.split(':')
         const disponible = await stockDe(tx, tipo, Number(id))
         if (disponible < requerido) {
-          faltantes.push({ tipo, id: Number(id), requerido, disponible })
+          faltantes.push({
+            tipo,
+            id: Number(id),
+            nombre: await resolverNombreCuenta(tx, tipo, Number(id)),
+            requerido,
+            disponible,
+          })
         }
       }
       if (faltantes.length > 0) {
         const e = new HttpError(
           409,
           `No se puede editar el pedido: hay stock insuficiente para los productos agregados. ${faltantes
-            .map((f) => `${f.tipo} ${f.id} (requerido ${f.requerido}, hay ${f.disponible})`)
+            .map((f) => `${f.nombre} (requerido ${f.requerido}, hay ${f.disponible})`)
             .join(', ')}`
         )
         e.faltantes = faltantes
         throw e
       }
 
+      const nuevosIds = []
       for (const item of agregarProductos) {
         const it = await procesarItem(tx, item)
         if (it.tipo === 'combo') {
           for (const dp of it.detalleProductos) {
-            await tx.pedido_Producto.create({
+            const pp = await tx.pedido_Producto.create({
               data: {
                 pedidoId: pedido.id,
                 productoId: dp.productoId,
@@ -761,6 +826,7 @@ export const editarPedido = asyncHandler(async (req, res) => {
                 comboPrecioCongelado: it.comboPrecioCongelado,
               },
             })
+            nuevosIds.push(pp.id)
           }
         } else {
           const d = it.detalle
@@ -773,6 +839,7 @@ export const editarPedido = asyncHandler(async (req, res) => {
               esMitadYMitad: d.esMitadYMitad,
             },
           })
+          nuevosIds.push(pp.id)
           if (d.esMitadYMitad) {
             await tx.pedido_Producto_Mitad.create({
               data: {
@@ -788,6 +855,24 @@ export const editarPedido = asyncHandler(async (req, res) => {
             })
           }
         }
+      }
+
+      // Reservar el inventario de los ítems agregados (docs/04 + docs/06): la
+      // reserva se hizo al crear el pedido, así que los nuevos ítems se
+      // reservan aquí con la misma lógica (validando stock y "usar disponible").
+      const nuevosPp = await tx.pedido_Producto.findMany({
+        where: { id: { in: nuevosIds } },
+        include: { mitadYMitad: true, modificadores: true },
+      })
+      const reserva = await descontarInventarioPedido(tx, {
+        productos: await itemsDesdePp(tx, nuevosPp),
+        pedidoId: pedido.id,
+        usarDisponible,
+      })
+      if (reserva.conflicto) {
+        const e = new HttpError(409, `No se pudo editar el pedido: ${reserva.mensaje}`)
+        e.faltantes = reserva.faltantes
+        throw e
       }
     }
 
@@ -825,14 +910,51 @@ export const editarPedido = asyncHandler(async (req, res) => {
     total += pedido.costoEnvio ?? 0
 
     let cambioALlevar = pedido.cambioALlevar
-    if (pedido.metodoPago === 'Efectivo' && !pedido.noCobrar && pedido.montoReferenciaPago != null) {
+    if (montoReferenciaPago !== undefined) {
+      // Se puede actualizar el monto con el que el cliente paga al editar el
+      // pedido (docs/07): A_domicilio exige que esté dentro de las opciones de
+      // cambio configuradas; Para_recoger acepta cualquier monto que cubra el total.
+      if (pedido.metodoPago !== 'Efectivo' || pedido.noCobrar) {
+        throw new HttpError(
+          400,
+          'montoReferenciaPago solo aplica si metodoPago=Efectivo y no_cobrar=false'
+        )
+      }
+      if (typeof montoReferenciaPago !== 'number' || montoReferenciaPago < total) {
+        throw new HttpError(400, 'El nuevo montoReferenciaPago debe cubrir el total del pedido')
+      }
+      const config = await obtenerConfiguracion(tx)
+      if (
+        pedido.tipo === 'A_domicilio' &&
+        !(config.opcionesCambio ?? []).includes(montoReferenciaPago)
+      ) {
+        throw new HttpError(
+          400,
+          `montoReferenciaPago (${montoReferenciaPago}) no está dentro de las opciones de cambio configuradas: ${(config.opcionesCambio ?? []).join(', ')}`
+        )
+      }
+      cambioALlevar = montoReferenciaPago - total
+    } else if (
+      pedido.metodoPago === 'Efectivo' &&
+      !pedido.noCobrar &&
+      pedido.montoReferenciaPago != null
+    ) {
       if (pedido.montoReferenciaPago < total) {
-        throw new HttpError(400, 'El montoReferenciaPago ya no cubre el nuevo total tras la edición')
+        const e = new HttpError(400, 'El montoReferenciaPago ya no cubre el nuevo total tras la edición')
+        e.nuevoTotal = total
+        throw e
       }
       cambioALlevar = pedido.montoReferenciaPago - total
     }
 
-    await tx.pedido.update({ where: { id: pedido.id }, data: { total, cambioALlevar } })
+    await tx.pedido.update({
+      where: { id: pedido.id },
+      data: {
+        total,
+        cambioALlevar,
+        ...(montoReferenciaPago !== undefined ? { montoReferenciaPago } : {}),
+      },
+    })
     return tx.pedido.findUnique({ where: { id: pedido.id }, include: includePedido })
   })
 

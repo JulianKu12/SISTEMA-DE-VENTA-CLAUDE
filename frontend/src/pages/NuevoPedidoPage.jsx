@@ -419,6 +419,7 @@ function NuevoPedidoPage() {
   const [montoOtro, setMontoOtro] = useState('')
   const [enviando, setEnviando] = useState(false)
   const [errorConfirmacion, setErrorConfirmacion] = useState('')
+  const [stockFaltante, setStockFaltante] = useState(null)
   const [errorCliente, setErrorCliente] = useState('')
   const [errorReferencia, setErrorReferencia] = useState('')
   const [pedidoCreado, setPedidoCreado] = useState(null)
@@ -623,6 +624,7 @@ function NuevoPedidoPage() {
 
   const confirmarPedido = async () => {
     setErrorConfirmacion('')
+    setStockFaltante(null)
     if (ticket.length === 0 || !tipo) return
 
     if (tipo === 'A_domicilio') {
@@ -696,6 +698,7 @@ function NuevoPedidoPage() {
       setPedidoCreado(pedido)
     } catch (err) {
       setErrorConfirmacion(err.message)
+      if (err.stockInsuficiente) setStockFaltante(err.stockInsuficiente)
     } finally {
       setEnviando(false)
     }
@@ -1325,6 +1328,18 @@ function NuevoPedidoPage() {
                       <p className="mt-3 rounded-2xl bg-danger/10 px-4 py-3 text-sm font-medium text-danger">
                         {errorConfirmacion}
                       </p>
+                    )}
+                    {stockFaltante?.length > 0 && (
+                      <div className="mt-3 space-y-1.5 rounded-2xl bg-danger/5 px-4 py-3">
+                        <p className="text-xs font-bold uppercase tracking-wide text-danger">
+                          Stock insuficiente
+                        </p>
+                        {stockFaltante.map((f) => (
+                          <p key={`${f.tipo}-${f.id}`} className="text-sm text-ink">
+                            {f.nombre}: requerido {f.requerido} · disponible {f.disponible}
+                          </p>
+                        ))}
+                      </div>
                     )}
                     <Button
                       className="mt-3 w-full"

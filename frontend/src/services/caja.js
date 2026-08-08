@@ -9,6 +9,23 @@ async function extraerMensaje(respuesta, mensajePorDefecto) {
   return mensaje
 }
 
+// Arma un Error con el message del servidor y adjunta stockInsuficiente
+// (con el nombre de cada faltante) y opcionesPrecio, para que las páginas
+// puedan mostrar el detalle exacto del stock insuficiente.
+async function construirError(respuesta, mensajePorDefecto) {
+  let datos = null
+  try {
+    datos = await respuesta.json()
+  } catch {
+    // respuesta sin cuerpo JSON: se conserva el mensaje por defecto
+  }
+  const e = new Error(datos?.message || mensajePorDefecto)
+  if (datos?.stockInsuficiente) e.stockInsuficiente = datos.stockInsuficiente
+  if (datos?.opcionesPrecio) e.opcionesPrecio = datos.opcionesPrecio
+  if (datos?.nuevoTotal != null) e.nuevoTotal = datos.nuevoTotal
+  return e
+}
+
 const token = () => localStorage.getItem('pos.token')
 
 async function peticion(ruta, { metodo = 'GET', body } = {}) {
@@ -31,7 +48,7 @@ export async function obtenerEstadoCaja() {
 
 export async function abrirCaja(payload) {
   const respuesta = await peticion('/api/caja/abrir', { metodo: 'POST', body: payload })
-  if (!respuesta.ok) throw new Error(await extraerMensaje(respuesta, 'No se pudo abrir la caja'))
+  if (!respuesta.ok) throw await construirError(respuesta, 'No se pudo abrir la caja')
   return respuesta.json()
 }
 

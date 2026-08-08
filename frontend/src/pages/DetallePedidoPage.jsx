@@ -3,6 +3,7 @@ import { useNavigate, useParams } from 'react-router-dom'
 import Button from '../components/ui/Button'
 import ConfirmModal from '../components/ui/ConfirmModal'
 import { obtenerCombos, obtenerProductos } from '../services/catalogo'
+import { obtenerConfiguracion } from '../services/configuracion'
 import {
   obtenerPedido,
   cambiarEstadoPago,
@@ -365,11 +366,147 @@ function ModalAgregar({ productos, combos, onAgregar, onCancelar }) {
   )
 }
 
+function ModalActualizarMonto({ esDomicilio, montoActual, total, onConfirmar, onCancelar }) {
+  const [config, setConfig] = useState(null)
+  const [monto, setMonto] = useState(esDomicilio ? null : '')
+  const [error, setError] = useState('')
+  const [enviando, setEnviando] = useState(false)
+
+  useEffect(() => {
+    const overflowAnterior = document.body.style.overflow
+    document.body.style.overflow = 'hidden'
+    const cerrarConEsc = (e) => {
+      if (e.key === 'Escape') onCancelar()
+    }
+    window.addEventListener('keydown', cerrarConEsc)
+    obtenerConfiguracion()
+      .then((c) => setConfig(c))
+      .catch(() => setConfig({ opcionesCambio: [50, 100, 200, 500] }))
+    return () => {
+      document.body.style.overflow = overflowAnterior
+      window.removeEventListener('keydown', cerrarConEsc)
+    }
+  }, [onCancelar])
+
+  const opciones = (config?.opcionesCambio || []).filter((o) => o >= total)
+
+  const confirmar = async () => {
+    setError('')
+    const valor = esDomicilio ? monto : Number(monto)
+    if (esDomicilio ? valor == null : !Number.isFinite(valor)) {
+      setError('Elige o indica el monto con el que pagará el cliente')
+      return
+    }
+    if (valor < total) {
+      setError('El monto debe cubrir el total del pedido')
+      return
+    }
+    if (esDomicilio && !(config?.opcionesCambio || []).includes(valor)) {
+      setError('Para domicilio, el monto debe estar dentro de las opciones de cambio configuradas')
+      return
+    }
+    setEnviando(true)
+    try {
+      await onConfirmar(valor)
+    } catch (err) {
+      setError(err.message)
+    } finally {
+      setEnviando(false)
+    }
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-end justify-center" role="dialog" aria-modal="true">
+      <div
+        className="absolute inset-0 animate-[fade-in_200ms_ease-out] bg-ink/40 backdrop-blur-sm"
+        onClick={onCancelar}
+      />
+      <div className="relative max-h-[88vh] w-full max-w-lg animate-[sheet-up_280ms_ease-out] overflow-y-auto rounded-t-3xl bg-card px-6 pb-6 pt-4 shadow-card">
+        <div className="mx-auto mb-4 h-1.5 w-10 rounded-full bg-muted/30" />
+        <h2 className="text-xl font-bold text-ink">Actualizar monto de pago</h2>
+        <p className="mt-2 text-sm leading-relaxed text-muted">
+          El total del pedido ahora es <span className="font-semibold text-ink">{formatearMonto(total)}</span> y el
+          monto con el que pagaba el cliente ({formatearMonto(montoActual)}) ya no lo cubre. Indica el nuevo monto.
+        </p>
+
+        {esDomicilio && (
+          <div className="mt-4">
+            <span className="mb-1 block text-xs font-medium text-muted">
+              Monto del cliente (opciones de cambio)
+            </span>
+            <div className="flex flex-wrap gap-2">
+              {opciones.length === 0 && (
+                <p className="text-sm text-danger">
+                  Ninguna opción configurada cubre el total. Ajusta las opciones de cambio en Configuración.
+                </p>
+              )}
+              {opciones.map((o) => (
+                <button
+                  key={o}
+                  type="button"
+                  onClick={() => setMonto(o)}
+                  className={`rounded-2xl px-5 py-3 text-base font-bold transition active:scale-95 ${
+                    monto === o
+                      ? 'bg-accent text-white shadow-card'
+                      : 'bg-input text-ink hover:bg-muted/20'
+                  }`}
+                >
+                  {formatearMonto(o)}
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {!esDomicilio && (
+          <div className="mt-4">
+            <label className="mb-1 block text-xs font-medium text-muted" htmlFor="monto-nuevo">
+              Monto con el que paga el cliente
+            </label>
+            <input
+              id="monto-nuevo"
+              className="w-full rounded-2xl border-none bg-input px-4 py-3 text-base text-ink outline-none transition focus:ring-2 focus:ring-accent/40"
+              type="number"
+              min={total}
+              step="any"
+              inputMode="decimal"
+              value={monto}
+              onChange={(e) => setMonto(e.target.value)}
+              placeholder="0.00"
+            />
+          </div>
+        )}
+
+        {error && (
+          <div className="mt-4 rounded-2xl bg-danger/10 px-4 py-3 text-sm font-medium text-danger">
+            {error}
+          </div>
+        )}
+
+        <div className="mt-6 flex items-center gap-3">
+          <Button variant="secondary" size="md" className="flex-1" onClick={onCancelar}>
+            Cancelar
+          </Button>
+          <Button
+            size="md"
+            className="flex-1"
+            disabled={enviando || (esDomicilio && monto == null)}
+            onClick={confirmar}
+          >
+            {enviando ? 'Guardando…' : 'Actualizar y continuar'}
+          </Button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 function DetallePedidoPage() {
   const { id } = useParams()
   const navigate = useNavigate()
   const [pedido, setPedido] = useState(null)
   const [error, setError] = useState('')
+  const [stockFaltante, setStockFaltante] = useState(null)
   const [notificacion, setNotificacion] = useState('')
   const [ocupado, setOcupado] = useState(false)
   const [modalRepartidor, setModalRepartidor] = useState(false)
@@ -380,6 +517,7 @@ function DetallePedidoPage() {
   const [combos, setCombos] = useState(null)
   const [confirmarCancelarAbierto, setConfirmarCancelarAbierto] = useState(false)
   const [regresoPendiente, setRegresoPendiente] = useState(null)
+  const [pendienteMonto, setPendienteMonto] = useState(null)
 
   const cargar = useCallback(async () => {
     setError('')
@@ -542,6 +680,33 @@ function DetallePedidoPage() {
     }
   }
 
+  const ejecutarEdicion = async (operacion, montoReferenciaPago) => {
+    if (ocupado) return null
+    setOcupado(true)
+    setError('')
+    setStockFaltante(null)
+    setNotificacion('')
+    try {
+      const res = await editarPedido(
+        id,
+        montoReferenciaPago !== undefined ? { ...operacion, montoReferenciaPago } : operacion,
+      )
+      if (res?.pedido) setPedido(res.pedido)
+      setEdicionActiva(true)
+      setNotificacion('Producto agregado y total recalculado')
+      return res
+    } catch (err) {
+      setError(err.message)
+      if (err.stockInsuficiente) setStockFaltante(err.stockInsuficiente)
+      if (err.nuevoTotal != null) {
+        setPendienteMonto({ operacion, nuevoTotal: err.nuevoTotal })
+      }
+      return null
+    } finally {
+      setOcupado(false)
+    }
+  }
+
   const agregarLinea = (item) => {
     const nuevo = item.tipoLinea
       ? item
@@ -558,29 +723,34 @@ function DetallePedidoPage() {
             cantidad: item.cantidad,
           }
     const coincidencia = lineas.find((l) => esMismaConfiguracion(l, nuevo))
-    const tarea = coincidencia
-      ? () =>
-          editarPedido(id, {
-            actualizarProductos:
-              coincidencia.tipoLinea === 'combo'
-                ? [
-                    {
-                      comboId: coincidencia.comboId,
-                      cantidad: coincidencia.cantidad + nuevo.cantidad,
-                    },
-                  ]
-                : [
-                    {
-                      pedidoProductoId: coincidencia.pedidoProductoId,
-                      cantidad: coincidencia.cantidad + nuevo.cantidad,
-                    },
-                  ],
-          })
-      : () => editarPedido(id, { agregarProductos: [item] })
-    correr(tarea, 'Producto agregado y total recalculado').then((res) => {
-      if (res) setEdicionActiva(true)
-    })
+    const operacion = coincidencia
+      ? {
+          actualizarProductos:
+            coincidencia.tipoLinea === 'combo'
+              ? [
+                  {
+                    comboId: coincidencia.comboId,
+                    cantidad: coincidencia.cantidad + nuevo.cantidad,
+                  },
+                ]
+              : [
+                  {
+                    pedidoProductoId: coincidencia.pedidoProductoId,
+                    cantidad: coincidencia.cantidad + nuevo.cantidad,
+                  },
+                ],
+        }
+      : { agregarProductos: [item] }
     setModalAgregar(false)
+    ejecutarEdicion(operacion)
+  }
+
+  const confirmarNuevoMonto = async (monto) => {
+    const pendiente = pendienteMonto
+    if (!pendiente) return
+    const res = await ejecutarEdicion(pendiente.operacion, monto)
+    if (res) setPendienteMonto(null)
+    else throw new Error('No se pudo actualizar el pedido con el nuevo monto')
   }
 
   const marcarPagado = () => {
@@ -652,6 +822,16 @@ function DetallePedidoPage() {
         {error && (
           <div className="rounded-2xl bg-danger/10 px-4 py-3 text-sm font-medium text-danger">
             {error}
+          </div>
+        )}
+        {stockFaltante?.length > 0 && (
+          <div className="space-y-1.5 rounded-2xl bg-danger/5 px-4 py-3">
+            <p className="text-xs font-bold uppercase tracking-wide text-danger">Stock insuficiente</p>
+            {stockFaltante.map((f) => (
+              <p key={`${f.tipo}-${f.id}`} className="text-sm text-ink">
+                {f.nombre}: requerido {f.requerido} · disponible {f.disponible}
+              </p>
+            ))}
           </div>
         )}
         {notificacion && (
@@ -893,6 +1073,16 @@ function DetallePedidoPage() {
           combos={combos || []}
           onAgregar={agregarLinea}
           onCancelar={() => setModalAgregar(false)}
+        />
+      )}
+
+      {pendienteMonto && (
+        <ModalActualizarMonto
+          esDomicilio={pedido?.tipo === 'A_domicilio'}
+          montoActual={pedido?.montoReferenciaPago}
+          total={pendienteMonto.nuevoTotal}
+          onConfirmar={confirmarNuevoMonto}
+          onCancelar={() => setPendienteMonto(null)}
         />
       )}
 

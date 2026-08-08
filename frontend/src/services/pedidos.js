@@ -1,12 +1,18 @@
-async function extraerMensaje(respuesta, mensajePorDefecto) {
-  let mensaje = mensajePorDefecto
+// Arma un Error con el message del servidor y adjunta los detalles de stock
+// (stockInsuficiente con nombre de cada faltante) y opcionesPrecio, para que
+// las páginas puedan mostrar el detalle exacto.
+async function construirError(respuesta, mensajePorDefecto) {
+  let datos = null
   try {
-    const datos = await respuesta.json()
-    if (datos?.message) mensaje = datos.message
+    datos = await respuesta.json()
   } catch {
     // respuesta sin cuerpo JSON: se conserva el mensaje por defecto
   }
-  return mensaje
+  const e = new Error(datos?.message || mensajePorDefecto)
+  if (datos?.stockInsuficiente) e.stockInsuficiente = datos.stockInsuficiente
+  if (datos?.opcionesPrecio) e.opcionesPrecio = datos.opcionesPrecio
+  if (datos?.nuevoTotal != null) e.nuevoTotal = datos.nuevoTotal
+  return e
 }
 
 export async function obtenerPedidos() {
@@ -16,7 +22,7 @@ export async function obtenerPedidos() {
   })
 
   if (!respuesta.ok) {
-    throw new Error(await extraerMensaje(respuesta, 'No se pudieron cargar los pedidos. Intenta de nuevo.'))
+    throw await construirError(respuesta, 'No se pudieron cargar los pedidos. Intenta de nuevo.')
   }
 
   return respuesta.json()
@@ -34,7 +40,7 @@ export async function crearPedido(payload) {
   })
 
   if (!respuesta.ok) {
-    throw new Error(await extraerMensaje(respuesta, 'No se pudo crear el pedido. Intenta de nuevo.'))
+    throw await construirError(respuesta, 'No se pudo crear el pedido. Intenta de nuevo.')
   }
 
   return respuesta.json()
@@ -53,7 +59,7 @@ async function peticionAutenticada(ruta, opciones = {}) {
   })
 
   if (!respuesta.ok) {
-    throw new Error(await extraerMensaje(respuesta, 'No se pudieron actualizar los datos. Intenta de nuevo.'))
+    throw await construirError(respuesta, 'No se pudieron actualizar los datos. Intenta de nuevo.')
   }
 
   return respuesta.json()

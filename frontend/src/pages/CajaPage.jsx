@@ -88,6 +88,7 @@ function ModalFormularioAbrir({ fondoInicial, productos, onCerrar, onGuardar }) 
   const [huboVentas, setHuboVentas] = useState(null)
   const [filas, setFilas] = useState([{ productoId: '', cantidad: '1', metodoPago: 'Efectivo' }])
   const [error, setError] = useState('')
+  const [stockFaltante, setStockFaltante] = useState(null)
   const [enviando, setEnviando] = useState(false)
 
   const ventasValidas = filas.filter((f) => f.productoId && f.cantidad !== '')
@@ -96,6 +97,7 @@ function ModalFormularioAbrir({ fondoInicial, productos, onCerrar, onGuardar }) 
 
   const confirmar = async () => {
     setError('')
+    setStockFaltante(null)
     if (huboVentas && !todasValidas) {
       setError('Indica un producto válido con cantidad entera mayor o igual a 1 en al menos una venta.')
       return
@@ -112,6 +114,7 @@ function ModalFormularioAbrir({ fondoInicial, productos, onCerrar, onGuardar }) 
       onCerrar()
     } catch (err) {
       setError(err.message)
+      if (err.stockInsuficiente) setStockFaltante(err.stockInsuficiente)
     } finally {
       setEnviando(false)
     }
@@ -127,6 +130,17 @@ function ModalFormularioAbrir({ fondoInicial, productos, onCerrar, onGuardar }) 
       {error && (
         <div className="rounded-2xl bg-danger/10 px-4 py-3 text-sm font-medium text-danger">
           {error}
+        </div>
+      )}
+
+      {stockFaltante?.length > 0 && (
+        <div className="mt-3 space-y-1.5 rounded-2xl bg-danger/5 px-4 py-3">
+          <p className="text-xs font-bold uppercase tracking-wide text-danger">Stock insuficiente</p>
+          {stockFaltante.map((f) => (
+            <p key={`${f.tipo}-${f.id}`} className="text-sm text-ink">
+              {f.nombre}: requerido {f.requerido} · disponible {f.disponible}
+            </p>
+          ))}
         </div>
       )}
 
@@ -381,11 +395,12 @@ function ModalFormularioGasto({ onCerrar, onGuardar }) {
       onCerrar={onCerrar}
     >
       <form onSubmit={guardar} className="space-y-5">
-        {error && (
-          <div className="rounded-2xl bg-danger/10 px-4 py-3 text-sm font-medium text-danger">
-            {error}
-          </div>
-        )}
+      {error && (
+        <div className="rounded-2xl bg-danger/10 px-4 py-3 text-sm font-medium text-danger">
+          {error}
+        </div>
+      )}
+
         <div className="space-y-1.5">
           <label className="block text-sm font-semibold text-ink" htmlFor="gas-concepto">
             Concepto

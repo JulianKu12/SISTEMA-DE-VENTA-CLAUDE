@@ -7,6 +7,7 @@ import {
   stockDe,
   sincronizarStockIngrediente,
   normalizarUsarDisponible,
+  resolverNombreCuenta,
 } from '../utils/inventario.js'
 
 const STOCK_INSUFICIENTE_STATUS = 409
@@ -363,6 +364,115 @@ export async function ejecutarVenta(tx, {
     pedidoIdResuelto = pedido.id
   }
 
+  const prep = await prepararVenta(tx, { productos, usarDisponible })
+  if (prep.conflicto) return prep
+
+  const { ventaRows, total, usos, capShares } = prep
+  const venta = await tx.venta.create({
+    data: {
+      pedidoId: pedidoIdResuelto,
+      total: total + costoEnvio,
+      metodoPago: noCobrar ? 'Efectivo' : (metodoPago ?? 'Efectivo'),
+      noCobrar,
+      esVentaPreviaApertura,
+      usuarioId,
+      diaOperativoId,
+    },
+  })
+
+  for (const row of ventaRows) {
+    const ventaProducto = await tx.venta_Producto.create({
+      data: {
+        ventaId: venta.id,
+        productoId: row.data.productoId,
+        cantidad: row.data.cantidad,
+        precioCongelado: row.data.precioCongelado,
+        esMitadYMitad: row.data.esMitadYMitad,
+        comboId: row.comboId,
+        comboPrecioCongelado: row.comboPrecioCongelado,
+      },
+    })
+
+    if (row.data.esMitadYMitad) {
+      await tx.venta_Producto_Mitad.create({
+        data: {
+          ventaProductoId: ventaProducto.id,
+          sabor1ProductoId: row.data.sabor1ProductoId,
+          sabor2ProductoId: row.data.sabor2ProductoId,
+        },
+      })
+    }
+
+    for (const m of row.modificadores) {
+      await tx.venta_Producto_Modificador.create({
+        data: {
+          ventaProductoId: ventaProducto.id,
+          modificadorId: m.modificadorId,
+          costoAplicado: m.costoAplicado,
+        },
+      })
+    }
+    row.ventaProductoId = ventaProducto.id
+  }
+
+  // Movimiento_Inventario tipo Salida_venta, uno por cuenta de CADA fila
+  // vendida (con su ventaProductoId/pedidoProductoId para revertir EXACTO
+  // en devoluciones, cancelaciones y ediciones — sin recalcular con la
+  // receta actual). Las cuentas con stock insuficiente confirmado usan la
+  // fracción realmente descontada (capShares), no el consumo completo.
+  for (let i = 0; i < ventaRows.length; i++) {
+    const row = ventaRows[i]
+    for (const c of row.consumos) {
+      const cantidad = capShares.get(`${c.tipo}:${c.id}`)?.get(i) ?? c.cantidad
+      if (!cantidad) continue
+      await tx.movimiento_Inventario.create({
+        data: {
+          ...(c.tipo === 'ingrediente'
+            ? { ingredienteId: c.id }
+            : { productoId: c.id }),
+          tipoMovimiento: 'Salida_venta',
+          cantidad: -cantidad,
+          referenciaId: venta.id,
+          referenciaTipo: 'Venta',
+          ventaProductoId: row.ventaProductoId,
+          pedidoProductoId: row.pedidoProductoId,
+        },
+      })
+      if (c.tipo === 'ingrediente') {
+        await sincronizarStockIngrediente(tx, c.id)
+      }
+    }
+  }
+
+  // Si el pedido existe, dejar también la referencia de solo lectura
+  // Pedido.venta_id apuntando a esta venta.
+  if (pedidoIdResuelto) {
+    await tx.pedido.update({ where: { id: pedidoIdResuelto }, data: { ventaId: venta.id } })
+  }
+
+  const creada = await tx.venta.findUnique({
+    where: { id: venta.id },
+    include: {
+      productos: {
+        include: {
+          producto: { select: { id: true, nombre: true } },
+          combo: { select: { id: true, nombre: true } },
+          mitadYMitad: true,
+          modificadores: { include: { modificador: { select: { id: true, nombre: true } } } },
+        },
+      },
+      diaOperativo: { select: { id: true, estado: true } },
+    },
+  })
+  return { venta: creada, usos }
+}
+
+// Prepara los ítems de una venta/pedido SIN efectos de escritura: normaliza,
+// acumula requerimientos, valida stock (si validarStock) y calcula el "real a
+// descontar" por fila/cuenta (usos, cuentasTope, capShares). Devuelve
+// { conflicto, faltantes, mensaje, opcionesPrecio } si falta stock sin
+// confirmar, o { itemsProcesados, ventaRows, total, usos, capShares }.
+async function prepararVenta(tx, { productos, usarDisponible, validarStock = true }) {
   const confirmados = normalizarUsarDisponible(usarDisponible)
   const confirmarTodo = usarDisponible === true
 
@@ -379,74 +489,7 @@ export async function ejecutarVenta(tx, {
     }
   }
 
-  // 2) Validar stock contra la suma de movimientos de cada cuenta.
-  const stocks = new Map()
-  const faltantes = []
-  for (const [key, requerido] of requerimientos) {
-    const [tipo, id] = key.split(':')
-    const disponible = await stockDe(tx, tipo, Number(id))
-    stocks.set(key, disponible)
-    if (disponible < requerido) {
-      faltantes.push({ tipo, id: Number(id), requerido, disponible })
-    }
-  }
-
-  // 3) Si falta stock y el usuario NO confirmó esos ingredientes: responder
-  //    con la cantidad disponible, SIN completar la venta.
-  const sinConfirmar = faltantes.filter(
-    (f) => !confirmarTodo && !confirmados.has(`${f.tipo}:${f.id}`)
-  )
-  if (sinConfirmar.length > 0) {
-    const respuesta = {
-      conflicto: true,
-      faltantes,
-      mensaje:
-        'Stock insuficiente. Confirma qué ingredientes se usarán con la cantidad disponible para continuar (usarDisponible).',
-    }
-
-    // Para combos se ofrece además el "precio real" (suma de precios normales
-    // de los productos del combo) y el precio especial, para vender por
-    // separado lo disponible (docs/03).
-    const combos = itemsProcesados.filter((it) => it.tipo === 'combo')
-    if (combos.length > 0) {
-      const cuentasOk = new Set()
-      for (const [key, requerido] of requerimientos) {
-        if ((stocks.get(key) ?? 0) >= requerido) cuentasOk.add(key)
-      }
-      respuesta.opcionesPrecio = combos.map((c) => {
-        const disponibles = c.detalleProductos.filter((dp) =>
-          dp.consumos.every((cc) => cuentasOk.has(`${cc.tipo}:${cc.id}`))
-        )
-        return {
-          comboId: c.comboId,
-          cantidad: c.cantidad,
-          precioReal: disponibles.reduce((a, dp) => a + dp.precioCongelado, 0),
-          precioEspecial: c.comboPrecioCongelado,
-        }
-      })
-    }
-    return respuesta
-  }
-
-  // 4) Calcular la cantidad REAL a descontar: para los confirmados con stock
-  //    insuficiente se descuenta solo lo disponible (queda en 0, no negativo).
-  const usos = []
-  const cuentasTope = new Map()
-  for (const [key, requerido] of requerimientos) {
-    const [tipo, id] = key.split(':')
-    const disponible = stocks.get(key)
-    if (disponible >= requerido) {
-      usos.push({ tipo, id: Number(id), cantidad: requerido })
-    } else if (confirmarTodo || confirmados.has(key)) {
-      usos.push({ tipo, id: Number(id), cantidad: disponible })
-      cuentasTope.set(key, { tipo, id: Number(id), cantidad: disponible })
-    } else {
-      // No debería llegar: sinConfirmar habría frenado antes.
-      usos.push({ tipo, id: Number(id), cantidad: requerido })
-    }
-  }
-
-  // 5) Crear la Venta y sus detalles dentro de la misma transacción.
+  // 2) Construir las filas (Venta_Producto o reserva de pedido) y el total.
   let total = 0
   const ventaRows = []
   for (const it of itemsProcesados) {
@@ -492,11 +535,179 @@ export async function ejecutarVenta(tx, {
     }
   }
 
+  if (!validarStock) {
+    return { itemsProcesados, ventaRows, total, usos: [], capShares: new Map() }
+  }
+
+  // 3) Validar stock contra la suma de movimientos de cada cuenta.
+  const stocks = new Map()
+  const faltantes = []
+  for (const [key, requerido] of requerimientos) {
+    const [tipo, id] = key.split(':')
+    const disponible = await stockDe(tx, tipo, Number(id))
+    stocks.set(key, disponible)
+    if (disponible < requerido) {
+      faltantes.push({
+        tipo,
+        id: Number(id),
+        nombre: await resolverNombreCuenta(tx, tipo, Number(id)),
+        requerido,
+        disponible,
+      })
+    }
+  }
+
+  // 4) Si falta stock y el usuario NO confirmó esos ingredientes: responder
+  //    con la cantidad disponible, SIN completar la operación.
+  const sinConfirmar = faltantes.filter(
+    (f) => !confirmarTodo && !confirmados.has(`${f.tipo}:${f.id}`)
+  )
+  if (sinConfirmar.length > 0) {
+    const respuesta = {
+      conflicto: true,
+      faltantes,
+      mensaje:
+        'Stock insuficiente. Confirma qué ingredientes se usarán con la cantidad disponible para continuar (usarDisponible).',
+    }
+
+    // Para combos se ofrece además el "precio real" (suma de precios normales
+    // de los productos del combo) y el precio especial, para vender por
+    // separado lo disponible (docs/03).
+    const combos = itemsProcesados.filter((it) => it.tipo === 'combo')
+    if (combos.length > 0) {
+      const cuentasOk = new Set()
+      for (const [key, requerido] of requerimientos) {
+        if ((stocks.get(key) ?? 0) >= requerido) cuentasOk.add(key)
+      }
+      respuesta.opcionesPrecio = combos.map((c) => {
+        const disponibles = c.detalleProductos.filter((dp) =>
+          dp.consumos.every((cc) => cuentasOk.has(`${cc.tipo}:${cc.id}`))
+        )
+        return {
+          comboId: c.comboId,
+          cantidad: c.cantidad,
+          precioReal: disponibles.reduce((a, dp) => a + dp.precioCongelado, 0),
+          precioEspecial: c.comboPrecioCongelado,
+        }
+      })
+    }
+    return respuesta
+  }
+
+  // 5) Calcular la cantidad REAL a descontar: para los confirmados con stock
+  //    insuficiente se descuenta solo lo disponible (queda en 0, no negativo).
+  const usos = []
+  const cuentasTope = new Map()
+  for (const [key, requerido] of requerimientos) {
+    const [tipo, id] = key.split(':')
+    const disponible = stocks.get(key)
+    if (disponible >= requerido) {
+      usos.push({ tipo, id: Number(id), cantidad: requerido })
+    } else if (confirmarTodo || confirmados.has(key)) {
+      usos.push({ tipo, id: Number(id), cantidad: disponible })
+      cuentasTope.set(key, { tipo, id: Number(id), cantidad: disponible })
+    } else {
+      // No debería llegar: sinConfirmar habría frenado antes.
+      usos.push({ tipo, id: Number(id), cantidad: requerido })
+    }
+  }
+
+  // 6) Distribuir "usar disponible" (stock insuficiente confirmado) PROPORCIONAL-
+  //    MENTE entre las filas que consumen cada cuenta topeada. Así cada
+  //    Salida_venta queda vinculada a su ventaProductoId/pedidoProductoId y un
+  //    regreso parcial (devolución por ventaProductoId o quitar un
+  //    Pedido_Producto) revierte EXACTO el monto parcial realmente descontado.
+  //    capShares: `tipo:id` -> Map(fila -> cantidad)
+  const capShares = new Map()
+  for (const [key, cuenta] of cuentasTope) {
+    const filas = []
+    for (let i = 0; i < ventaRows.length; i++) {
+      for (const c of ventaRows[i].consumos) {
+        if (`${c.tipo}:${c.id}` === key) filas.push({ row: i, cantidad: c.cantidad })
+      }
+    }
+    const totalRequerido = filas.reduce((acc, f) => acc + f.cantidad, 0)
+    if (totalRequerido <= 0) continue
+    let restante = cuenta.cantidad
+    const porFila = new Map()
+    filas.forEach((f, idx) => {
+      const esUltima = idx === filas.length - 1
+      let share
+      if (esUltima) {
+        share = restante
+      } else {
+        share = Math.min(Math.round((f.cantidad * cuenta.cantidad) / totalRequerido), f.cantidad)
+        share = Math.max(0, Math.min(share, restante))
+      }
+      restante -= share
+      porFila.set(f.row, share)
+    })
+    capShares.set(key, porFila)
+  }
+
+  return { itemsProcesados, ventaRows, total, usos, capShares }
+}
+
+// Descuenta el inventario de un Pedido AL CREARSE (rediseño docs/04 + docs/06):
+// genera los Movimiento_Inventario tipo Salida_venta EXACTOS (con modificadores,
+// mitad y mitad y "usar disponible" ya aplicados), pero SIN venta de por medio:
+// quedan "reservados" (referenciaId = pedido.id, ventaProductoId = null,
+// pedidoProductoId por fila). Al pagarse, `crearVentaPedido` re-vincula esos
+// movimientos a la Venta nueva sin duplicar el descuento.
+// Devuelve { conflicto, faltantes, mensaje, opcionesPrecio } si falta stock sin
+// confirmar, o { ok: true, movimientos } si se reservó correctamente.
+export async function descontarInventarioPedido(tx, { productos, pedidoId, usarDisponible }) {
+  const prep = await prepararVenta(tx, { productos, usarDisponible })
+  if (prep.conflicto) return prep
+
+  const { ventaRows, capShares } = prep
+  let movimientos = 0
+  for (let i = 0; i < ventaRows.length; i++) {
+    const row = ventaRows[i]
+    for (const c of row.consumos) {
+      const cantidad = capShares.get(`${c.tipo}:${c.id}`)?.get(i) ?? c.cantidad
+      if (!cantidad) continue
+      await tx.movimiento_Inventario.create({
+        data: {
+          ...(c.tipo === 'ingrediente' ? { ingredienteId: c.id } : { productoId: c.id }),
+          tipoMovimiento: 'Salida_venta',
+          cantidad: -cantidad,
+          referenciaId: pedidoId,
+          pedidoProductoId: row.pedidoProductoId,
+        },
+      })
+      movimientos++
+      if (c.tipo === 'ingrediente') {
+        await sincronizarStockIngrediente(tx, c.id)
+      }
+    }
+  }
+  return { ok: true, movimientos }
+}
+
+// Crea la Venta de un Pedido al pagarse (o marcarse "No cobrar" en la entrega)
+// y RE-VINCULA los Movimiento_Inventario ya reservados al crear el pedido
+// (referenciaId = pedido.id, ventaProductoId = null): los actualiza a
+// referenciaId = venta.id, referenciaTipo = 'Venta' y ventaProductoId =
+// ventaProducto.id. NUNCA duplica el descuento. Para pedidos creados antes del
+// rediseño (sin movimientos reservados) se genera el descuento como respaldo.
+export async function crearVentaPedido(tx, {
+  productos,
+  pedidoId,
+  metodoPago = 'Efectivo',
+  noCobrar = false,
+  costoEnvio = 0,
+  esVentaPreviaApertura = false,
+  usuarioId,
+  diaOperativoId,
+}) {
+  const prep = await prepararVenta(tx, { productos, validarStock: false })
+
   const venta = await tx.venta.create({
     data: {
-      pedidoId: pedidoIdResuelto,
-      total: total + costoEnvio,
-      metodoPago: noCobrar ? 'Efectivo' : (metodoPago ?? 'Efectivo'),
+      pedidoId,
+      total: prep.total + costoEnvio,
+      metodoPago,
       noCobrar,
       esVentaPreviaApertura,
       usuarioId,
@@ -504,8 +715,7 @@ export async function ejecutarVenta(tx, {
     },
   })
 
-  const filasCreadas = []
-  for (const row of ventaRows) {
+  for (const row of prep.ventaRows) {
     const ventaProducto = await tx.venta_Producto.create({
       data: {
         ventaId: venta.id,
@@ -537,76 +747,56 @@ export async function ejecutarVenta(tx, {
         },
       })
     }
-    filasCreadas.push({ ventaProducto, row })
-  }
 
-  // Distribuir "usar disponible" (stock insuficiente confirmado) PROPORCIONAL-
-  // MENTE entre las filas que consumen cada cuenta topeada. Así cada Salida_venta
-  // queda vinculada a su ventaProductoId/pedidoProductoId y un regreso parcial
-  // (devolución por ventaProductoId o quitar un Pedido_Producto) revierte EXACTO
-  // el monto parcial realmente descontado — ni la receta completa ni cero.
-  // capShares: `tipo:id` -> Map(fila -> cantidad)
-  const capShares = new Map()
-  for (const [key, cuenta] of cuentasTope) {
-    const filas = []
-    for (let i = 0; i < ventaRows.length; i++) {
-      for (const c of ventaRows[i].consumos) {
-        if (`${c.tipo}:${c.id}` === key) filas.push({ row: i, cantidad: c.cantidad })
-      }
-    }
-    const totalRequerido = filas.reduce((acc, f) => acc + f.cantidad, 0)
-    if (totalRequerido <= 0) continue
-    let restante = cuenta.cantidad
-    const porFila = new Map()
-    filas.forEach((f, idx) => {
-      const esUltima = idx === filas.length - 1
-      let share
-      if (esUltima) {
-        share = restante
-      } else {
-        share = Math.min(Math.round((f.cantidad * cuenta.cantidad) / totalRequerido), f.cantidad)
-        share = Math.max(0, Math.min(share, restante))
-      }
-      restante -= share
-      porFila.set(f.row, share)
-    })
-    capShares.set(key, porFila)
-  }
-
-  // 6) Movimiento_Inventario tipo Salida_venta, uno por cuenta de CADA fila
-  //    vendida (con su ventaProductoId/pedidoProductoId para revertir EXACTO
-  //    en devoluciones, cancelaciones y ediciones — sin recalcular con la
-  //    receta actual). Las cuentas con stock insuficiente confirmado usan la
-  //    fracción realmente descontada (capShares), no el consumo completo.
-  for (let i = 0; i < filasCreadas.length; i++) {
-    const { ventaProducto, row } = filasCreadas[i]
-    for (const c of row.consumos) {
-      const cantidad = capShares.get(`${c.tipo}:${c.id}`)?.get(i) ?? c.cantidad
-      if (!cantidad) continue
-      await tx.movimiento_Inventario.create({
-        data: {
-          ...(c.tipo === 'ingrediente'
-            ? { ingredienteId: c.id }
-            : { productoId: c.id }),
-          tipoMovimiento: 'Salida_venta',
-          cantidad: -cantidad,
-          referenciaId: venta.id,
-          referenciaTipo: 'Venta',
-          ventaProductoId: ventaProducto.id,
-          pedidoProductoId: row.pedidoProductoId,
-        },
+    if (row.pedidoProductoId != null) {
+      // Re-vincular la reserva hecha al crear el pedido (Salida_venta con
+      // pedidoProductoId y SIN ventaProductoId todavía).
+      const vinculados = await tx.movimiento_Inventario.updateMany({
+        where: { pedidoProductoId: row.pedidoProductoId, ventaProductoId: null },
+        data: { ventaProductoId: ventaProducto.id, referenciaId: venta.id, referenciaTipo: 'Venta' },
       })
-      if (c.tipo === 'ingrediente') {
-        await sincronizarStockIngrediente(tx, c.id)
+
+      // Respaldo para pedidos creados ANTES del rediseño (sin reserva): se
+      // genera el descuento como una venta normal para no perder trazabilidad.
+      if (vinculados.count === 0) {
+        for (const c of row.consumos) {
+          await tx.movimiento_Inventario.create({
+            data: {
+              ...(c.tipo === 'ingrediente' ? { ingredienteId: c.id } : { productoId: c.id }),
+              tipoMovimiento: 'Salida_venta',
+              cantidad: -c.cantidad,
+              referenciaId: venta.id,
+              referenciaTipo: 'Venta',
+              ventaProductoId: ventaProducto.id,
+              pedidoProductoId: row.pedidoProductoId,
+            },
+          })
+          if (c.tipo === 'ingrediente') {
+            await sincronizarStockIngrediente(tx, c.id)
+          }
+        }
+      }
+    } else {
+      // Fila sin pedidoProductoId (defensivo): descuento directo a la venta.
+      for (const c of row.consumos) {
+        await tx.movimiento_Inventario.create({
+          data: {
+            ...(c.tipo === 'ingrediente' ? { ingredienteId: c.id } : { productoId: c.id }),
+            tipoMovimiento: 'Salida_venta',
+            cantidad: -c.cantidad,
+            referenciaId: venta.id,
+            referenciaTipo: 'Venta',
+            ventaProductoId: ventaProducto.id,
+          },
+        })
+        if (c.tipo === 'ingrediente') {
+          await sincronizarStockIngrediente(tx, c.id)
+        }
       }
     }
   }
 
-  // Si el pedido existe, dejar también la referencia de solo lectura
-  // Pedido.venta_id apuntando a esta venta.
-  if (pedidoIdResuelto) {
-    await tx.pedido.update({ where: { id: pedidoIdResuelto }, data: { ventaId: venta.id } })
-  }
+  await tx.pedido.update({ where: { id: pedidoId }, data: { ventaId: venta.id } })
 
   const creada = await tx.venta.findUnique({
     where: { id: venta.id },
@@ -622,7 +812,7 @@ export async function ejecutarVenta(tx, {
       diaOperativo: { select: { id: true, estado: true } },
     },
   })
-  return { venta: creada, usos }
+  return { venta: creada }
 }
 
 // GET /api/ventas — reporte completo de ventas (docs/07: solo Administrador).

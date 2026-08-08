@@ -34,6 +34,20 @@ export async function stockDe(db, tipo, id) {
   throw new HttpError(400, 'tipo inválido')
 }
 
+// Resuelve el nombre legible de una cuenta de stock ('ingrediente' | 'producto')
+// para enriquecer los faltantes de `stockInsuficiente` con nombre exacto.
+export async function resolverNombreCuenta(db, tipo, id) {
+  if (tipo === 'ingrediente') {
+    const ing = await db.ingrediente.findUnique({ where: { id } })
+    return ing?.nombre ?? `Ingrediente #${id}`
+  }
+  if (tipo === 'producto') {
+    const p = await db.producto.findUnique({ where: { id } })
+    return p?.nombre ?? `Producto #${id}`
+  }
+  return String(id)
+}
+
 // Re-sincroniza el campo cacheado `Ingrediente.stockActual` desde la suma de sus
 // movimientos (mantener la caché al día). Los productos reventa no tienen campo
 // de stock en el esquema, por eso solo aplica a ingredientes.
