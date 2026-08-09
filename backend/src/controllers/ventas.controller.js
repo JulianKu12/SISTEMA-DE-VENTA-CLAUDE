@@ -866,6 +866,37 @@ export const listarVentas = asyncHandler(async (req, res) => {
   res.json(ventas)
 })
 
+// GET /api/ventas/:id — detalle de una Venta individual incluyendo sus
+// Venta_Producto (con sus ids) para el módulo de devoluciones: permite elegir
+// productos específicos (venta_producto_ids) o toda la venta.
+export const obtenerVenta = asyncHandler(async (req, res) => {
+  const { id } = req.params
+  const numero = Number(id)
+  if (!Number.isInteger(numero) || numero < 1) {
+    throw new HttpError(400, 'id de venta inválido')
+  }
+  const venta = await prisma.venta.findUnique({
+    where: { id: numero },
+    include: {
+      productos: {
+        include: {
+          producto: { select: { id: true, nombre: true } },
+          combo: { select: { id: true, nombre: true } },
+          mitadYMitad: {
+            include: {
+              sabor1Producto: { select: { id: true, nombre: true } },
+              sabor2Producto: { select: { id: true, nombre: true } },
+            },
+          },
+          modificadores: { include: { modificador: { select: { id: true, nombre: true } } } },
+        },
+      },
+    },
+  })
+  if (!venta) throw new HttpError(404, 'La venta indicada no existe')
+  res.json(venta)
+})
+
 // GET /api/ventas/no-cobrar — reporte de auditoría de consumo interno
 // (docs/04 "Lógica: Consumo interno" y docs/07: solo Administrador). Lista
 // SOLO las Venta con no_cobrar=true mostrando producto, costo congelado,

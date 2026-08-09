@@ -11,6 +11,7 @@ import {
   editarPedido,
   obtenerRepartidoresDisponibles,
 } from '../services/pedidos'
+import { obtenerVenta, registrarDevolucion } from '../services/devoluciones'
 import { esMismaConfiguracion } from '../utils/ticket'
 
 const CONFIG_ESTADOS = {
@@ -64,6 +65,20 @@ const ETIQUETA_ORIGEN = {
   Mostrador: 'Mostrador',
   Telefono: 'Por teléfono',
 }
+
+const MOTIVOS_DEVOLUCION = [
+  { id: 'Producto_mal_estado', etiqueta: 'Producto en mal estado' },
+  { id: 'Pedido_incorrecto', etiqueta: 'Pedido incorrecto' },
+  { id: 'Cliente_insatisfecho', etiqueta: 'Cliente insatisfecho' },
+  { id: 'Otro', etiqueta: 'Otro' },
+]
+
+const MEDIOS_DEVOLUCION = [
+  { id: 'Efectivo', etiqueta: 'Efectivo' },
+  { id: 'Tarjeta', etiqueta: 'Tarjeta' },
+  { id: 'Transferencia', etiqueta: 'Transferencia' },
+  { id: 'Efectivo_de_caja', etiqueta: 'Efectivo de caja' },
+]
 
 function formatearMonto(monto) {
   if (monto == null) return '—'
@@ -501,6 +516,219 @@ function ModalActualizarMonto({ esDomicilio, montoActual, total, onConfirmar, on
   )
 }
 
+function ModalDevolucion({ venta, onConfirmar, onCancelar }) {
+  const [modo, setModo] = useState('toda')
+  const [seleccion, setSeleccion] = useState([])
+  const [monto, setMonto] = useState(() => String(venta.total ?? 0))
+  const [motivo, setMotivo] = useState(MOTIVOS_DEVOLUCION[0].id)
+  const [regresaAInventario, setRegresaAInventario] = useState(false)
+  const [medioDevolucion, setMedioDevolucion] = useState(() =>
+    venta.noCobrar || !MEDIOS_DEVOLUCION.some((m) => m.id === venta.metodoPago)
+      ? 'Efectivo_de_caja'
+      : venta.metodoPago,
+  )
+  const [error, setError] = useState('')
+  const [enviando, setEnviando] = useState(false)
+
+  useEffect(() => {
+    const overflowAnterior = document.body.style.overflow
+    document.body.style.overflow = 'hidden'
+    const cerrarConEsc = (e) => {
+      if (e.key === 'Escape') onCancelar()
+    }
+    window.addEventListener('keydown', cerrarConEsc)
+    return () => {
+      document.body.style.overflow = overflowAnterior
+      window.removeEventListener('keydown', cerrarConEsc)
+    }
+  }, [onCancelar])
+
+  const cambiarModo = (nuevo) => {
+    setModo(nuevo)
+    setError('')
+    if (nuevo === 'toda') {
+      setSeleccion([])
+      setMonto(String(venta.total ?? 0))
+    } else {
+      setMonto('')
+    }
+  }
+
+  const alternarProducto = (id) => {
+    const nuevo = seleccion.includes(id)
+      ? seleccion.filter((x) => x !== id)
+      : [...seleccion, id]
+    setSeleccion(nuevo)
+    setMonto(
+      nuevo.length === 0
+        ? ''
+        : String(
+            (venta.productos || [])
+              .filter((vp) => nuevo.includes(vp.id))
+              .reduce((acc, vp) => acc + (vp.precioCongelado || 0) * (vp.cantidad || 0), 0),
+          ),
+    )
+  }
+
+  const confirmar = async () => {
+    setError('')
+    const montoFinal = Number(monto)
+    if (!Number.isFinite(montoFinal) || montoFinal <= 0) {
+      setError('Indica un monto a devolver mayor o igual a 0')
+      return
+    }
+    if (modo !== 'toda' && seleccion.length === 0) {
+      setError('Selecciona al menos un producto de la venta')
+      return
+    }
+    setEnviando(true)
+    try {
+      await onConfirmar({
+        ventaId: venta.id,
+        monto: montoFinal,
+        motivo,
+        regresaAInventario,
+        medioDevolucion,
+        ventaProductoIds: modo === 'toda' ? undefined : seleccion,
+      })
+    } catch (err) {
+      setError(err.message)
+    } finally {
+      setEnviando(false)
+    }
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-end justify-center" role="dialog" aria-modal="true">
+      <div
+        className="absolute inset-0 animate-[fade-in_200ms_ease-out] bg-ink/40 backdrop-blur-sm"
+        onClick={onCancelar}
+      />
+      <div className="relative max-h-[88vh] w-full max-w-lg animate-[sheet-up_280ms_ease-out] overflow-y-auto rounded-t-3xl bg-card px-6 pb-6 pt-4 shadow-card">
+        <div className="mx-auto mb-4 h-1.5 w-10 rounded-full bg-muted/30" />
+        <h2 className="text-xl font-bold text-ink">Registrar devolución</h2>
+        <p className="mt-1 text-sm text-muted">
+          Venta #{venta.id} · pagada con {venta.metodoPago}
+        </p>
+
+        <div className="mt-4">
+          <span className="mb-1 block text-xs font-medium text-muted">Producto(s) a devolver</span>
+          <div className="space-y-2">
+            <button
+              type="button"
+              onClick={() => cambiarModo('toda')}
+              aria-pressed={modo === 'toda'}
+              className={`flex w-full items-center justify-between gap-3 rounded-2xl px-4 py-3 text-left transition ${
+                modo === 'toda' ? 'bg-accent/10' : 'bg-surface'
+              }`}
+            >
+              <span className="text-sm font-semibold text-ink">Toda la venta</span>
+              <span className="text-sm font-bold text-ink">{formatearMonto(venta.total)}</span>
+            </button>
+            {(venta.productos || []).map((vp) => {
+              const activo = modo === 'productos' && seleccion.includes(vp.id)
+              const nombre = vp.producto?.nombre || (vp.combo ? `Combo: ${vp.combo.nombre}` : `#${vp.id}`)
+              return (
+                <button
+                  key={vp.id}
+                  type="button"
+                  onClick={() => {
+                    cambiarModo('productos')
+                    alternarProducto(vp.id)
+                  }}
+                  aria-pressed={activo}
+                  className={`flex w-full items-center justify-between gap-3 rounded-2xl px-4 py-3 text-left transition ${
+                    activo ? 'bg-accent/10' : 'bg-surface'
+                  }`}
+                >
+                  <span className="min-w-0 truncate text-sm font-semibold text-ink">
+                    {vp.cantidad}× {nombre}
+                  </span>
+                  <span className="shrink-0 text-sm font-bold text-ink">
+                    {formatearMonto((vp.precioCongelado || 0) * (vp.cantidad || 0))}
+                  </span>
+                </button>
+              )
+            })}
+          </div>
+        </div>
+
+        <div className="mt-4">
+          <label className="mb-1 block text-xs font-medium text-muted" htmlFor="dev-monto">
+            Monto a devolver
+          </label>
+          <input
+            id="dev-monto"
+            className="w-full rounded-2xl border-none bg-input px-4 py-3 text-base text-ink outline-none transition focus:ring-2 focus:ring-accent/40"
+            type="number"
+            min="0"
+            step="any"
+            inputMode="decimal"
+            value={monto}
+            onChange={(e) => setMonto(e.target.value)}
+            placeholder="0.00"
+          />
+        </div>
+
+        <div className="mt-4">
+          <span className="mb-1 block text-xs font-medium text-muted">Motivo</span>
+          <select
+            value={motivo}
+            onChange={(e) => setMotivo(e.target.value)}
+            className="w-full rounded-2xl border-none bg-input px-4 py-3 text-base text-ink outline-none transition focus:ring-2 focus:ring-accent/40"
+          >
+            {MOTIVOS_DEVOLUCION.map((m) => (
+              <option key={m.id} value={m.id}>
+                {m.etiqueta}
+              </option>
+            ))}
+          </select>
+        </div>
+
+        <label className="mt-4 flex cursor-pointer items-center justify-between gap-3">
+          <span className="text-sm font-semibold text-ink">¿Regresar al inventario?</span>
+          <input
+            type="checkbox"
+            checked={regresaAInventario}
+            onChange={(e) => setRegresaAInventario(e.target.checked)}
+            className="h-5 w-5 accent-[#007aff]"
+          />
+        </label>
+
+        <div className="mt-4">
+          <span className="mb-1 block text-xs font-medium text-muted">Medio de devolución</span>
+          <select
+            value={medioDevolucion}
+            onChange={(e) => setMedioDevolucion(e.target.value)}
+            className="w-full rounded-2xl border-none bg-input px-4 py-3 text-base text-ink outline-none transition focus:ring-2 focus:ring-accent/40"
+          >
+            {MEDIOS_DEVOLUCION.map((m) => (
+              <option key={m.id} value={m.id}>
+                {m.etiqueta}
+              </option>
+            ))}
+          </select>
+        </div>
+
+        {error && (
+          <div className="mt-4 rounded-2xl bg-danger/10 px-4 py-3 text-sm font-medium text-danger">
+            {error}
+          </div>
+        )}
+
+        <div className="mt-6 flex items-center gap-3">
+          <Button variant="secondary" size="md" className="flex-1" onClick={onCancelar}>
+            Cancelar
+          </Button>
+          <Button size="md" className="flex-1" disabled={enviando} onClick={confirmar}>
+            {enviando ? 'Registrando…' : 'Registrar devolución'}
+          </Button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 function DetallePedidoPage() {
   const { id } = useParams()
   const navigate = useNavigate()
@@ -518,6 +746,7 @@ function DetallePedidoPage() {
   const [confirmarCancelarAbierto, setConfirmarCancelarAbierto] = useState(false)
   const [regresoPendiente, setRegresoPendiente] = useState(null)
   const [pendienteMonto, setPendienteMonto] = useState(null)
+  const [modalDevolucion, setModalDevolucion] = useState(null)
 
   const cargar = useCallback(async () => {
     setError('')
@@ -770,6 +999,31 @@ function DetallePedidoPage() {
       () => cambiarEstadoPago(id, { estadoPago: 'Pagado' }),
       'Pedido pagado. Venta generada.',
     )
+  }
+
+  const puedeDevolver = enEntregado && pedido?.venta?.id != null
+
+  const abrirDevolucion = async () => {
+    setError('')
+    setNotificacion('')
+    try {
+      const ventaDetalle = await obtenerVenta(pedido.venta.id)
+      setModalDevolucion(ventaDetalle)
+    } catch (err) {
+      setError(err.message)
+    }
+  }
+
+  const confirmarDevolucion = async (payload) => {
+    const res = await registrarDevolucion(payload)
+    setModalDevolucion(null)
+    setNotificacion(
+      res.mensaje ||
+        (res.asociadaASiguienteDia
+          ? 'Devolución registrada (se asociará a la próxima caja)'
+          : 'Devolución registrada'),
+    )
+    cargar()
   }
 
   const nombreCliente = pedido
@@ -1060,6 +1314,17 @@ function DetallePedidoPage() {
                 </Button>
               )}
 
+              {puedeDevolver && (
+                <Button
+                  variant="secondary"
+                  size="md"
+                  onClick={abrirDevolucion}
+                  disabled={ocupado}
+                >
+                  Registrar devolución
+                </Button>
+              )}
+
               {editable && (
                 <Button
                   variant="secondary"
@@ -1093,6 +1358,13 @@ function DetallePedidoPage() {
           disponibles={repartidores}
           onSeleccionar={enviarConRepartidor}
           onCancelar={() => setModalRepartidor(false)}
+        />
+      )}
+      {modalDevolucion && (
+        <ModalDevolucion
+          venta={modalDevolucion}
+          onConfirmar={confirmarDevolucion}
+          onCancelar={() => setModalDevolucion(null)}
         />
       )}
       {modalAgregar && (
