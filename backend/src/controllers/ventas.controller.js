@@ -891,6 +891,10 @@ export const obtenerVenta = asyncHandler(async (req, res) => {
           modificadores: { include: { modificador: { select: { id: true, nombre: true } } } },
         },
       },
+      devoluciones: {
+        orderBy: { fechaHora: 'desc' },
+        select: { id: true, monto: true, motivo: true, medioDevolucion: true, fechaHora: true },
+      },
     },
   })
   if (!venta) throw new HttpError(404, 'La venta indicada no existe')

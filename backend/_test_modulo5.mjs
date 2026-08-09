@@ -103,6 +103,13 @@ try {
     'reporte devoluciones: producto, costo, medio original y medio de devolucion'
   )
 
+  console.log('== Devolución duplicada/excedente rechazada ==')
+  const devRepetida = await req('POST', '/api/devoluciones', {
+    ventaId: vEfectivo.data.venta.id, monto: 15, motivo: 'Otro',
+    medioDevolucion: 'Efectivo_de_caja', regresaAInventario: true, usuarioId: admin.id,
+  })
+  ok(devRepetida.status === 400 && /excede/i.test(devRepetida.data.message), 'devolución de una venta ya devuelta -> 400 (excede)')
+
   console.log('== Cierre caja 1 ==')
   const cerrar1 = await req('POST', '/api/caja/cerrar', { efectivoContado: 80, usuarioId: admin.id })
   // esperado = 100 + 15 (efectivo) - 20 (gasto) - 15 (devolucion Efectivo_de_caja) = 80
@@ -113,7 +120,7 @@ try {
 
   console.log('== Devolucion sin caja abierta (post-cierre) ==')
   const devSinCaja = await req('POST', '/api/devoluciones', {
-    ventaId: vEfectivo.data.venta.id, monto: 5, motivo: 'Otro',
+    ventaId: vTarjeta.data.venta.id, monto: 5, motivo: 'Otro',
     medioDevolucion: 'Efectivo', regresaAInventario: false, usuarioId: admin.id,
   })
   ok(devSinCaja.status === 201 && devSinCaja.data.devolucion.diaOperativoId === null, 'devolucion sin caja -> 201 con diaOperativoId null')
@@ -155,13 +162,25 @@ try {
   })
   ok(malParcial.status === 400, 'ventaProductoIds ajeno a la venta -> 400')
 
-  console.log('== Devolucion completa (sin venta_producto_ids) ==')
-  const devCompleta = await req('POST', '/api/devoluciones', {
-    ventaId: v2.data.venta.id, monto: 25, motivo: 'Otro',
-    medioDevolucion: 'Tarjeta', regresaAInventario: true, usuarioId: admin.id,
+  console.log('== Devolución parcial duplicada / excedente rechazada ==')
+  const devDuelParcial = await req('POST', '/api/devoluciones', {
+    ventaId: v2.data.venta.id, ventaProductoIds: [vpCoca.id], monto: 10, motivo: 'Otro',
+    medioDevolucion: 'Efectivo', regresaAInventario: true, usuarioId: admin.id,
   })
-  ok(devCompleta.status === 201 && devCompleta.data.movimientosRegreso === 2, 'devolucion completa regresa los 2 productos')
-  ok((await stockProducto(coca.id)) === 8 && (await stockProducto(agua.id)) === 10, 'coca 8 y agua 10 tras regreso completo')
+  ok(devDuelParcial.status === 400 && /ya fue devuelto/i.test(devDuelParcial.data.message), 'producto ya devuelto -> 400 (duplicada)')
+  const devExceso = await req('POST', '/api/devoluciones', {
+    ventaId: v2.data.venta.id, monto: 99, motivo: 'Otro',
+    medioDevolucion: 'Efectivo', usuarioId: admin.id,
+  })
+  ok(devExceso.status === 400 && /excede/i.test(devExceso.data.message), 'devolución que excede el monto pagado -> 400')
+
+  console.log('== Devolución restante (lo que falta de la venta) ==')
+  const devRestante = await req('POST', '/api/devoluciones', {
+    ventaId: v2.data.venta.id, ventaProductoIds: [vpAgua.id], monto: 10, motivo: 'Otro',
+    medioDevolucion: 'Efectivo', regresaAInventario: true, usuarioId: admin.id,
+  })
+  ok(devRestante.status === 201 && devRestante.data.movimientosRegreso === 1, 'devolución restante genera 1 movimiento (solo agua)')
+  ok((await stockProducto(coca.id)) === 7 && (await stockProducto(agua.id)) === 10, 'agua regresada (9->10), coca sin cambios (7)')
 
   console.log('== Cierre caja 2 ==')
   // esperado = 50 + 25 (venta efectivo de 2 productos) = 75 (devoluciones con medio Efectivo/Tarjeta no restan)

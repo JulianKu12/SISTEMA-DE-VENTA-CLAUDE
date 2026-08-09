@@ -12,6 +12,7 @@ import {
   obtenerVentas,
 } from '../services/caja'
 import { obtenerProductos } from '../services/catalogo'
+import { listarDevoluciones } from '../services/reportes'
 
 const CATEGORIAS_GASTO = ['Insumos', 'Servicios', 'Sueldos', 'Otro']
 const METODOS_PAGO = ['Efectivo', 'Tarjeta', 'Transferencia']
@@ -113,8 +114,8 @@ function ModalFormularioAbrir({ fondoInicial, productos, onCerrar, onGuardar }) 
       await onGuardar(ventasPrevias)
       onCerrar()
     } catch (err) {
-      setError(err.message)
       if (err.stockInsuficiente) setStockFaltante(err.stockInsuficiente)
+      else setError(err.message)
     } finally {
       setEnviando(false)
     }
@@ -576,7 +577,11 @@ function CajaPage({ pestanaInicial = 'caja' }) {
   const abrirResumen = async (dia) => {
     setErrorLista('')
     try {
-      const [ventas, todosGastos] = await Promise.all([obtenerVentas(dia.id), listarGastos()])
+      const [ventas, todosGastos, todasDevoluciones] = await Promise.all([
+        obtenerVentas(dia.id),
+        listarGastos(),
+        listarDevoluciones(),
+      ])
       const ventasNormales = (ventas || []).filter((v) => !v.noCobrar && !v.esVentaPreviaApertura)
       const ventasEfectivo = ventas
         .filter((v) => !v.noCobrar && !v.esVentaPreviaApertura && v.metodoPago === 'Efectivo')
@@ -597,6 +602,11 @@ function CajaPage({ pestanaInicial = 'caja' }) {
       const gastosTransferencia = gastosDia
         .filter((g) => g.metodoPago === 'Transferencia')
         .reduce((a, g) => a + g.monto, 0)
+      const devolucionesDia = (todasDevoluciones || []).filter((d) => d.diaOperativoId === dia.id)
+      const devolucionesEfectivoCaja = devolucionesDia
+        .filter((d) => d.medioDevolucion === 'Efectivo_de_caja')
+        .reduce((a, d) => a + d.monto, 0)
+      const devolucionesTotal = devolucionesDia.reduce((a, d) => a + d.monto, 0)
       setResumen({
         totalVentas: ventasNormales.length,
         ventasEfectivo,
@@ -605,7 +615,9 @@ function CajaPage({ pestanaInicial = 'caja' }) {
         gastosEfectivo,
         gastosTarjeta,
         gastosTransferencia,
-        esperado: dia.fondoInicial + ventasEfectivo - gastosEfectivo,
+        devolucionesEfectivoCaja,
+        devolucionesTotal,
+        esperado: dia.fondoInicial + ventasEfectivo - gastosEfectivo - devolucionesEfectivoCaja,
       })
     } catch (err) {
       setErrorLista(err.message)
@@ -875,6 +887,8 @@ function CajaPage({ pestanaInicial = 'caja' }) {
             <FilaResumen etiqueta="Gastos en efectivo" valor={formatearMonto(resumen.gastosEfectivo)} />
             <FilaResumen etiqueta="Gastos con tarjeta" valor={formatearMonto(resumen.gastosTarjeta)} />
             <FilaResumen etiqueta="Gastos por transferencia" valor={formatearMonto(resumen.gastosTransferencia)} />
+            <FilaResumen etiqueta="Devoluciones en efectivo" valor={formatearMonto(resumen.devolucionesEfectivoCaja)} />
+            <FilaResumen etiqueta="Devoluciones (total)" valor={formatearMonto(resumen.devolucionesTotal)} />
             <FilaResumen
               etiqueta="Efectivo esperado"
               valor={formatearMonto(resumen.esperado)}
@@ -913,6 +927,7 @@ function CajaPage({ pestanaInicial = 'caja' }) {
             <FilaResumen etiqueta="Gastos en efectivo" valor={formatearMonto(resultadoCierre.gastosEfectivo)} />
             <FilaResumen etiqueta="Gastos con tarjeta" valor={formatearMonto(resultadoCierre.gastos?.tarjeta)} />
             <FilaResumen etiqueta="Gastos por transferencia" valor={formatearMonto(resultadoCierre.gastos?.transferencia)} />
+            <FilaResumen etiqueta="Devoluciones en efectivo" valor={formatearMonto(resultadoCierre.devolucionesEfectivoCaja)} />
           </div>
           {(resultadoCierre.pedidosPendientesPago?.cantidad || 0) > 0 && (
             <div className="mt-4 rounded-2xl bg-amber-500/10 px-4 py-3 text-sm font-medium text-amber-600">

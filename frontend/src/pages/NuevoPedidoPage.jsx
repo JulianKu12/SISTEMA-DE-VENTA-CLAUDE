@@ -574,6 +574,8 @@ function NuevoPedidoPage() {
   const metodosPagoValidos = tipo ? METODOS_PAGO[tipo] || [] : []
   const costoEnvioAplicado = tipo === 'A_domicilio' && !noCobrar ? costoEnvio : 0
   const totalConEnvio = total + costoEnvioAplicado
+  const maxOpcionCambio = opcionesCambio.length > 0 ? Math.max(...opcionesCambio) : 0
+  const permiteOtroDomicilio = tipo === 'A_domicilio' && totalConEnvio > maxOpcionCambio
   const montoOtroNumerico = montoOtro !== '' ? Number(montoOtro) : null
   const montoEfectivo = modoOtro ? montoOtroNumerico : montoCambio
   const cambio = montoEfectivo != null ? montoEfectivo - totalConEnvio : null
@@ -698,8 +700,8 @@ function NuevoPedidoPage() {
       const pedido = await crearPedido(payload)
       setPedidoCreado(pedido)
     } catch (err) {
-      setErrorConfirmacion(err.message)
       if (err.stockInsuficiente) setStockFaltante(err.stockInsuficiente)
+      else setErrorConfirmacion(err.message)
     } finally {
       setEnviando(false)
     }
@@ -1096,7 +1098,7 @@ function NuevoPedidoPage() {
                             </button>
                           )
                         })}
-                        {tipo === 'Para_recoger' && (
+                        {(tipo === 'Para_recoger' || permiteOtroDomicilio) && (
                           <button
                             type="button"
                             onClick={() => {
@@ -1115,7 +1117,7 @@ function NuevoPedidoPage() {
                         )}
                       </div>
 
-                      {tipo === 'Para_recoger' && modoOtro && (
+                      {(modoOtro && (tipo === 'Para_recoger' || permiteOtroDomicilio)) && (
                         <label className="mt-3 block">
                           <span className="mb-1 block text-xs font-medium text-muted">
                             Monto con el que paga

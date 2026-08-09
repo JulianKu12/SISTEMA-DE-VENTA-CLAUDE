@@ -383,6 +383,7 @@ function ModalAgregar({ productos, combos, onAgregar, onCancelar }) {
 
 function ModalActualizarMonto({ esDomicilio, montoActual, total, onConfirmar, onCancelar }) {
   const [config, setConfig] = useState(null)
+  const [modoOtro, setModoOtro] = useState(false)
   const [monto, setMonto] = useState(esDomicilio ? null : '')
   const [error, setError] = useState('')
   const [enviando, setEnviando] = useState(false)
@@ -403,12 +404,15 @@ function ModalActualizarMonto({ esDomicilio, montoActual, total, onConfirmar, on
     }
   }, [onCancelar])
 
-  const opciones = (config?.opcionesCambio || []).filter((o) => o >= total)
+  const opcionesCambio = config?.opcionesCambio || []
+  const opcionMasAlta = opcionesCambio.length > 0 ? Math.max(...opcionesCambio) : 0
+  const opciones = opcionesCambio.filter((o) => o >= total)
+  const permiteOtroDomicilio = esDomicilio && total > opcionMasAlta
 
   const confirmar = async () => {
     setError('')
-    const valor = esDomicilio ? monto : Number(monto)
-    if (esDomicilio ? valor == null : !Number.isFinite(valor)) {
+    const valor = esDomicilio && !modoOtro ? monto : Number(monto)
+    if (esDomicilio && !modoOtro ? valor == null : !Number.isFinite(valor)) {
       setError('Elige o indica el monto con el que pagará el cliente')
       return
     }
@@ -416,7 +420,9 @@ function ModalActualizarMonto({ esDomicilio, montoActual, total, onConfirmar, on
       setError('El monto debe cubrir el total del pedido')
       return
     }
-    if (esDomicilio && !(config?.opcionesCambio || []).includes(valor)) {
+    // Para domicilio el monto debe estar dentro de las opciones configuradas,
+    // salvo que el total SUPERE la opción más alta (regla "Otro").
+    if (esDomicilio && !modoOtro && !opcionesCambio.includes(valor)) {
       setError('Para domicilio, el monto debe estar dentro de las opciones de cambio configuradas')
       return
     }
@@ -450,18 +456,16 @@ function ModalActualizarMonto({ esDomicilio, montoActual, total, onConfirmar, on
               Monto del cliente (opciones de cambio)
             </span>
             <div className="flex flex-wrap gap-2">
-              {opciones.length === 0 && (
-                <p className="text-sm text-danger">
-                  Ninguna opción configurada cubre el total. Ajusta las opciones de cambio en Configuración.
-                </p>
-              )}
               {opciones.map((o) => (
                 <button
                   key={o}
                   type="button"
-                  onClick={() => setMonto(o)}
+                  onClick={() => {
+                    setModoOtro(false)
+                    setMonto(o)
+                  }}
                   className={`rounded-2xl px-5 py-3 text-base font-bold transition active:scale-95 ${
-                    monto === o
+                    monto === o && !modoOtro
                       ? 'bg-accent text-white shadow-card'
                       : 'bg-input text-ink hover:bg-muted/20'
                   }`}
@@ -469,11 +473,33 @@ function ModalActualizarMonto({ esDomicilio, montoActual, total, onConfirmar, on
                   {formatearMonto(o)}
                 </button>
               ))}
+              {permiteOtroDomicilio && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setModoOtro(true)
+                    setMonto(null)
+                  }}
+                  aria-pressed={modoOtro}
+                  className={`rounded-2xl px-5 py-3 text-base font-bold transition active:scale-95 ${
+                    modoOtro
+                      ? 'bg-accent text-white shadow-card'
+                      : 'bg-input text-ink hover:bg-muted/20'
+                  }`}
+                >
+                  Otro
+                </button>
+              )}
             </div>
+            {!permiteOtroDomicilio && opciones.length === 0 && (
+              <p className="text-sm text-danger">
+                Ninguna opción configurada cubre el total. Ajusta las opciones de cambio en Configuración.
+              </p>
+            )}
           </div>
         )}
 
-        {!esDomicilio && (
+        {(!esDomicilio || modoOtro) && (
           <div className="mt-4">
             <label className="mb-1 block text-xs font-medium text-muted" htmlFor="monto-nuevo">
               Monto con el que paga el cliente
@@ -517,9 +543,11 @@ function ModalActualizarMonto({ esDomicilio, montoActual, total, onConfirmar, on
 }
 
 function ModalDevolucion({ venta, onConfirmar, onCancelar }) {
+  const montoYaDevuelto = (venta.devoluciones || []).reduce((a, d) => a + d.monto, 0)
+  const montoRestante = Math.max(0, (venta.total ?? 0) - montoYaDevuelto)
   const [modo, setModo] = useState('toda')
   const [seleccion, setSeleccion] = useState([])
-  const [monto, setMonto] = useState(() => String(venta.total ?? 0))
+  const [monto, setMonto] = useState(() => String(montoRestante))
   const [motivo, setMotivo] = useState(MOTIVOS_DEVOLUCION[0].id)
   const [regresaAInventario, setRegresaAInventario] = useState(false)
   const [medioDevolucion, setMedioDevolucion] = useState(() =>
@@ -548,7 +576,7 @@ function ModalDevolucion({ venta, onConfirmar, onCancelar }) {
     setError('')
     if (nuevo === 'toda') {
       setSeleccion([])
-      setMonto(String(venta.total ?? 0))
+      setMonto(String(montoRestante))
     } else {
       setMonto('')
     }
@@ -575,6 +603,12 @@ function ModalDevolucion({ venta, onConfirmar, onCancelar }) {
     const montoFinal = Number(monto)
     if (!Number.isFinite(montoFinal) || montoFinal <= 0) {
       setError('Indica un monto a devolver mayor o igual a 0')
+      return
+    }
+    if (montoFinal > montoRestante) {
+      setError(
+        `El monto a devolver (${formatearMonto(montoFinal)}) excede lo que falta de la venta (${formatearMonto(montoRestante)})`,
+      )
       return
     }
     if (modo !== 'toda' && seleccion.length === 0) {
@@ -657,11 +691,17 @@ function ModalDevolucion({ venta, onConfirmar, onCancelar }) {
           <label className="mb-1 block text-xs font-medium text-muted" htmlFor="dev-monto">
             Monto a devolver
           </label>
+          {montoYaDevuelto > 0 && (
+            <p className="mb-2 text-sm text-amber-600">
+              Ya se devolvieron {formatearMonto(montoYaDevuelto)} de esta venta. Quedan {formatearMonto(montoRestante)}.
+            </p>
+          )}
           <input
             id="dev-monto"
             className="w-full rounded-2xl border-none bg-input px-4 py-3 text-base text-ink outline-none transition focus:ring-2 focus:ring-accent/40"
             type="number"
             min="0"
+            max={montoRestante}
             step="any"
             inputMode="decimal"
             value={monto}
@@ -747,6 +787,7 @@ function DetallePedidoPage() {
   const [regresoPendiente, setRegresoPendiente] = useState(null)
   const [pendienteMonto, setPendienteMonto] = useState(null)
   const [modalDevolucion, setModalDevolucion] = useState(null)
+  const [ventaInfo, setVentaInfo] = useState(null)
 
   const cargar = useCallback(async () => {
     setError('')
@@ -754,6 +795,16 @@ function DetallePedidoPage() {
     try {
       const datos = await obtenerPedido(id)
       setPedido(datos)
+      if (datos?.venta?.id) {
+        try {
+          const detalle = await obtenerVenta(datos.venta.id)
+          setVentaInfo(detalle)
+        } catch {
+          setVentaInfo(null)
+        }
+      } else {
+        setVentaInfo(null)
+      }
     } catch (err) {
       setError(err.message)
     }
@@ -937,8 +988,8 @@ function DetallePedidoPage() {
       setNotificacion('Producto agregado y total recalculado')
       return res
     } catch (err) {
-      setError(err.message)
       if (err.stockInsuficiente) setStockFaltante(err.stockInsuficiente)
+      else setError(err.message)
       if (err.nuevoTotal != null) {
         setPendienteMonto({ operacion, nuevoTotal: err.nuevoTotal })
       }
@@ -1002,6 +1053,10 @@ function DetallePedidoPage() {
   }
 
   const puedeDevolver = enEntregado && pedido?.venta?.id != null
+
+  const montoDevueltoVenta = (ventaInfo?.devoluciones || []).reduce((a, d) => a + d.monto, 0)
+  const ventaTotalmenteDevuelta =
+    ventaInfo != null && (ventaInfo.total ?? 0) > 0 && montoDevueltoVenta >= (ventaInfo.total ?? 0)
 
   const abrirDevolucion = async () => {
     setError('')
@@ -1319,9 +1374,9 @@ function DetallePedidoPage() {
                   variant="secondary"
                   size="md"
                   onClick={abrirDevolucion}
-                  disabled={ocupado}
+                  disabled={ocupado || ventaTotalmenteDevuelta}
                 >
-                  Registrar devolución
+                  {ventaTotalmenteDevuelta ? 'Venta ya devuelta' : 'Registrar devolución'}
                 </Button>
               )}
 

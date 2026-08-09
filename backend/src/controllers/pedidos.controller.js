@@ -243,15 +243,18 @@ export const crearPedido = asyncHandler(async (req, res) => {
     // monto_referencia_pago dentro de las opciones de cambio configuradas
     // (docs/07) SOLO aplica a pedidos A_domicilio. Para_recoger acepta
     // cualquier monto numérico válido (opción configurada o monto libre).
-    if (
-      tipo === 'A_domicilio' &&
-      montoReferencia != null &&
-      !(config.opcionesCambio ?? []).includes(montoReferencia)
-    ) {
-      throw new HttpError(
-        400,
-        `montoReferenciaPago (${montoReferencia}) no está dentro de las opciones de cambio configuradas: ${(config.opcionesCambio ?? []).join(', ')}`
-      )
+    // Excepción "Otro" para A_domicilio: si el total del pedido SUPERA la
+    // opción de cambio configurada más alta, se acepta cualquier monto que
+    // cubra el total (ninguna opción alcanza para el cambio).
+    if (tipo === 'A_domicilio' && montoReferencia != null) {
+      const opciones = config.opcionesCambio ?? []
+      const opcionMasAlta = opciones.length > 0 ? Math.max(...opciones) : 0
+      if (!opciones.includes(montoReferencia) && !(total > opcionMasAlta)) {
+        throw new HttpError(
+          400,
+          `montoReferenciaPago (${montoReferencia}) no está dentro de las opciones de cambio configuradas: ${opciones.join(', ')}`
+        )
+      }
     }
 
     // estado_pago inicial (docs/06): Mostrador + Para_recoger cobra al capturar.
@@ -924,13 +927,16 @@ export const editarPedido = asyncHandler(async (req, res) => {
         throw new HttpError(400, 'El nuevo montoReferenciaPago debe cubrir el total del pedido')
       }
       const config = await obtenerConfiguracion(tx)
+      const opciones = config.opcionesCambio ?? []
+      const opcionMasAlta = opciones.length > 0 ? Math.max(...opciones) : 0
       if (
         pedido.tipo === 'A_domicilio' &&
-        !(config.opcionesCambio ?? []).includes(montoReferenciaPago)
+        !opciones.includes(montoReferenciaPago) &&
+        !(total > opcionMasAlta)
       ) {
         throw new HttpError(
           400,
-          `montoReferenciaPago (${montoReferenciaPago}) no está dentro de las opciones de cambio configuradas: ${(config.opcionesCambio ?? []).join(', ')}`
+          `montoReferenciaPago (${montoReferenciaPago}) no está dentro de las opciones de cambio configuradas: ${opciones.join(', ')}`
         )
       }
       cambioALlevar = montoReferenciaPago - total

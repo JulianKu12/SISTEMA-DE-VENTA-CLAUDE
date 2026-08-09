@@ -22,6 +22,45 @@ export const crearDevolucion = asyncHandler(async (req, res) => {
     const venta = await tx.venta.findUnique({ where: { id: Number(ventaId) } })
     if (!venta) throw new HttpError(404, 'La venta indicada no existe')
 
+    // Límite (docs): la suma de devoluciones de una venta no puede EXCEDER el
+    // monto que el cliente pagó. Esto bloquea devoluciones duplicadas (doble
+    // clic o reintento) y devoluciones parciales que sobrepasen lo vendido.
+    const devolucionesPrevias = await tx.devolucion.aggregate({
+      _sum: { monto: true },
+      where: { ventaId: venta.id },
+    })
+    const montoYaDevuelto = devolucionesPrevias._sum.monto ?? 0
+    if (montoYaDevuelto + monto > venta.total) {
+      throw new HttpError(
+        400,
+        `La devolución excede el monto pagado de la venta (ya se devolvieron ${montoYaDevuelto} de ${venta.total})`
+      )
+    }
+
+    // Devolución PARCIAL: valida que los Venta_Producto pertenezcan a la venta
+    // y que ninguno ya haya sido devuelto (evita registrar el mismo producto
+    // dos veces, aunque no regrese a inventario).
+    let idsProductos = null
+    if (Array.isArray(ventaProductoIds) && ventaProductoIds.length > 0) {
+      idsProductos = [...new Set(ventaProductoIds.map(Number))]
+      const ventaProductos = await tx.venta_Producto.findMany({
+        where: { id: { in: idsProductos }, ventaId: venta.id },
+        select: { id: true },
+      })
+      if (ventaProductos.length !== idsProductos.length) {
+        throw new HttpError(400, 'Alguno de los ventaProductoIds no pertenece a la venta indicada')
+      }
+      const yaDevueltos = await tx.movimiento_Inventario.count({
+        where: { ventaProductoId: { in: idsProductos }, tipoMovimiento: 'Devolucion_regreso' },
+      })
+      if (yaDevueltos > 0) {
+        throw new HttpError(
+          400,
+          'Alguno de los productos seleccionados ya fue devuelto previamente (devolución duplicada)'
+        )
+      }
+    }
+
     // Se asocia al Dia_Operativo Abierto actual; si no hay ninguno, queda null
     // y se asocia al siguiente que se abra (mismo patrón que Gasto).
     const dia = await tx.dia_Operativo.findFirst({ where: { estado: 'Abierto' } })
@@ -41,21 +80,13 @@ export const crearDevolucion = asyncHandler(async (req, res) => {
     // Si regresa_a_inventario = true, suma de vuelta el stock.
     let regresos = 0
     if (regresaAInventario === true) {
-      if (Array.isArray(ventaProductoIds) && ventaProductoIds.length > 0) {
+      if (idsProductos != null) {
         // Devolución PARCIAL: solo regresan las Salida_venta EXACTAS de los
         // Venta_Producto indicados (modificadores, mitad y mitad, combos y
         // "usar disponible" ya aplicados en el momento de la venta) — no se
         // recalcula con la receta actual (evita el drift).
-        const ids = [...new Set(ventaProductoIds.map(Number))]
-        const ventaProductos = await tx.venta_Producto.findMany({
-          where: { id: { in: ids }, ventaId: venta.id },
-          select: { id: true },
-        })
-        if (ventaProductos.length !== ids.length) {
-          throw new HttpError(400, 'Alguno de los ventaProductoIds no pertenece a la venta indicada')
-        }
         const salidas = await tx.movimiento_Inventario.findMany({
-          where: { ventaProductoId: { in: ids }, tipoMovimiento: 'Salida_venta' },
+          where: { ventaProductoId: { in: idsProductos }, tipoMovimiento: 'Salida_venta' },
         })
         for (const mv of salidas) {
           await tx.movimiento_Inventario.create({
@@ -67,6 +98,7 @@ export const crearDevolucion = asyncHandler(async (req, res) => {
               cantidad: -mv.cantidad,
               referenciaId: devolucion.id,
               referenciaTipo: 'Devolucion',
+              ...(mv.ventaProductoId != null ? { ventaProductoId: mv.ventaProductoId } : {}),
             },
           })
           regresos++
@@ -91,6 +123,7 @@ export const crearDevolucion = asyncHandler(async (req, res) => {
               cantidad: -mv.cantidad,
               referenciaId: devolucion.id,
               referenciaTipo: 'Devolucion',
+              ...(mv.ventaProductoId != null ? { ventaProductoId: mv.ventaProductoId } : {}),
             },
           })
           regresos++

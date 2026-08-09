@@ -406,6 +406,53 @@ try {
   })
   ok(montoNoConfigDomicilio.status === 400 && /opciones de cambio/i.test(montoNoConfigDomicilio.data.message), 'A_domicilio rechaza monto no configurado -> 400')
 
+  console.log('== "Otro" en A_domicilio SOLO si el total supera la opción más alta ==')
+  const cfgOpciones = await req('PATCH', '/api/configuracion', { opcionesCambio: [5, 10] })
+  ok(cfgOpciones.status === 200 && JSON.stringify(cfgOpciones.data.opcionesCambio) === JSON.stringify([5, 10]), 'opciones de cambio reducidas a [5,10]')
+  // total domicilio = 15 (coca) + 5 (envio) = 20 > 10 -> se permite el monto libre.
+  const montoOtroDomicilio = await req('POST', '/api/pedidos', {
+    tipo: 'A_domicilio', origen: 'Telefono', nombreClienteLibre: 'Monto Otro Domicilio',
+    referenciaLibre: 'calle del monto otro 1',
+    productos: [{ productoId: coca.id, cantidad: 1 }],
+    metodoPago: 'Efectivo', montoReferenciaPago: 23, usuarioId: admin.id,
+  })
+  ok(montoOtroDomicilio.status === 201 && montoOtroDomicilio.data.cambioALlevar === 3, 'A_domicilio acepta monto fuera de opciones cuando el total supera la opción más alta (23 -> cambio 3)')
+  // total domicilio = 6 (chicle) <= 10 -> el monto libre NO se permite.
+  const chicle = await prisma.producto.create({ data: { nombre: 'Chicle6', precio: 6, tipo: 'Reventa_directa' } })
+  await prisma.movimiento_Inventario.create({ data: { productoId: chicle.id, tipoMovimiento: 'Entrada', cantidad: 1 } })
+  await req('PATCH', '/api/config/costo-envio', { costoEnvio: 0 })
+  const montoOtroRechazado = await req('POST', '/api/pedidos', {
+    tipo: 'A_domicilio', origen: 'Telefono', nombreClienteLibre: 'Monto Otro Rechazado',
+    referenciaLibre: 'calle del monto otro 2',
+    productos: [{ productoId: chicle.id, cantidad: 1 }],
+    metodoPago: 'Efectivo', montoReferenciaPago: 7, usuarioId: admin.id,
+  })
+  ok(montoOtroRechazado.status === 400 && /opciones de cambio/i.test(montoOtroRechazado.data.message), 'A_domicilio rechaza monto libre cuando el total NO supera la opción más alta -> 400')
+  // Restauramos la configuración global para no afectar otras suites.
+  await req('PATCH', '/api/configuracion', { opcionesCambio: [50, 100, 200, 500] })
+  await req('PATCH', '/api/config/costo-envio', { costoEnvio: 5 })
+
+  console.log('== Devolución excedente rechazada ==')
+  const abrir2_ = await req('POST', '/api/caja/abrir', { fondoInicial: 0, usuarioId: admin.id })
+  ok(abrir2_.status === 201, 'reabrir caja para la prueba de devolución')
+  const vDev = await req('POST', '/api/ventas', {
+    productos: [{ productoId: coca.id, cantidad: 1 }],
+    metodoPago: 'Efectivo',
+    usuarioId: admin.id,
+  })
+  ok(vDev.status === 201 && vDev.data.venta.total === 15, 'venta de prueba (15)')
+  const devExceso = await req('POST', '/api/devoluciones', {
+    ventaId: vDev.data.venta.id, monto: 20, motivo: 'Otro',
+    medioDevolucion: 'Efectivo', usuarioId: admin.id,
+  })
+  ok(devExceso.status === 400 && /excede/i.test(devExceso.data.message), 'devolución que excede el monto pagado -> 400')
+  const devCorrecta = await req('POST', '/api/devoluciones', {
+    ventaId: vDev.data.venta.id, monto: 15, motivo: 'Otro',
+    medioDevolucion: 'Efectivo', usuarioId: admin.id,
+  })
+  ok(devCorrecta.status === 201, 'devolución válida por el total -> 201')
+  await req('POST', '/api/caja/cerrar', { efectivoContado: 0, usuarioId: admin.id })
+
   console.log(`\nResultado: ${fallas === 0 ? 'TODAS LAS PRUEBAS PASARON' : fallas + ' prueba(s) fallaron'}`)
 } catch (e) {
   console.error('ERROR EN PRUEBA:', e)
