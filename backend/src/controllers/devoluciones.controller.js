@@ -39,7 +39,8 @@ export const crearDevolucion = asyncHandler(async (req, res) => {
 
     // Devolución PARCIAL: valida que los Venta_Producto pertenezcan a la venta
     // y que ninguno ya haya sido devuelto (evita registrar el mismo producto
-    // dos veces, aunque no regrese a inventario).
+    // dos veces, tanto si regresó a inventario como si no). Cada devolución
+    // parcial queda registrada en `ventaProductoIds` para este control.
     let idsProductos = null
     if (Array.isArray(ventaProductoIds) && ventaProductoIds.length > 0) {
       idsProductos = [...new Set(ventaProductoIds.map(Number))]
@@ -50,13 +51,32 @@ export const crearDevolucion = asyncHandler(async (req, res) => {
       if (ventaProductos.length !== idsProductos.length) {
         throw new HttpError(400, 'Alguno de los ventaProductoIds no pertenece a la venta indicada')
       }
-      const yaDevueltos = await tx.movimiento_Inventario.count({
+      const previasPorProducto = await tx.devolucion.findMany({
+        where: { ventaId: venta.id, ventaProductoIds: { not: null } },
+        select: { ventaProductoIds: true },
+      })
+      const idsYaDevueltos = new Set()
+      for (const d of previasPorProducto) {
+        for (const id of JSON.parse(d.ventaProductoIds || '[]')) idsYaDevueltos.add(Number(id))
+      }
+      const yaDevueltosMov = await tx.movimiento_Inventario.count({
         where: { ventaProductoId: { in: idsProductos }, tipoMovimiento: 'Devolucion_regreso' },
       })
-      if (yaDevueltos > 0) {
+      if (yaDevueltosMov > 0 || idsProductos.some((id) => idsYaDevueltos.has(id))) {
         throw new HttpError(
           400,
           'Alguno de los productos seleccionados ya fue devuelto previamente (devolución duplicada)'
+        )
+      }
+    } else {
+      // Devolución COMPLETA: solo se permite si la venta NO tiene devoluciones
+      // previas; de lo contrario volvería a regresar (o reembolsar) productos
+      // que ya se devolvieron. El pendiente debe devolverse por producto.
+      const devolucionesPreviasCount = await tx.devolucion.count({ where: { ventaId: venta.id } })
+      if (devolucionesPreviasCount > 0) {
+        throw new HttpError(
+          400,
+          'La venta ya tiene devoluciones parciales. Selecciona solo los productos que faltan por devolver.'
         )
       }
     }
@@ -73,6 +93,7 @@ export const crearDevolucion = asyncHandler(async (req, res) => {
         medioPagoOriginal: venta.metodoPago,
         medioDevolucion,
         regresaAInventario: regresaAInventario === true,
+        ventaProductoIds: idsProductos != null ? JSON.stringify(idsProductos) : null,
         diaOperativoId: dia?.id ?? null,
       },
     })

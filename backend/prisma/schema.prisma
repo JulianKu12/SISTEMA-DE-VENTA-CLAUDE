@@ -374,6 +374,7 @@ model Devolucion {
   medioPagoOriginal  MetodoPago
   medioDevolucion    MedioDevolucion
   regresaAInventario Boolean          @default(false)
+  ventaProductoIds   String?
   fechaHora          DateTime         @default(now())
   diaOperativoId     Int?
 

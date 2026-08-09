@@ -545,9 +545,20 @@ function ModalActualizarMonto({ esDomicilio, montoActual, total, onConfirmar, on
 function ModalDevolucion({ venta, onConfirmar, onCancelar }) {
   const montoYaDevuelto = (venta.devoluciones || []).reduce((a, d) => a + d.monto, 0)
   const montoRestante = Math.max(0, (venta.total ?? 0) - montoYaDevuelto)
-  const [modo, setModo] = useState('toda')
+  const productosYaDevueltos = new Set(
+    (venta.devoluciones || []).flatMap((d) => {
+      try {
+        return JSON.parse(d.ventaProductoIds || '[]')
+      } catch {
+        return []
+      }
+    }),
+  )
+  const [modo, setModo] = useState(() => (montoYaDevuelto > 0 ? 'productos' : 'toda'))
   const [seleccion, setSeleccion] = useState([])
-  const [monto, setMonto] = useState(() => String(montoRestante))
+  const [monto, setMonto] = useState(() =>
+    montoYaDevuelto > 0 ? '' : String(montoRestante),
+  )
   const [motivo, setMotivo] = useState(MOTIVOS_DEVOLUCION[0].id)
   const [regresaAInventario, setRegresaAInventario] = useState(false)
   const [medioDevolucion, setMedioDevolucion] = useState(() =>
@@ -583,6 +594,7 @@ function ModalDevolucion({ venta, onConfirmar, onCancelar }) {
   }
 
   const alternarProducto = (id) => {
+    if (productosYaDevueltos.has(id)) return
     const nuevo = seleccion.includes(id)
       ? seleccion.filter((x) => x !== id)
       : [...seleccion, id]
@@ -652,14 +664,21 @@ function ModalDevolucion({ venta, onConfirmar, onCancelar }) {
               type="button"
               onClick={() => cambiarModo('toda')}
               aria-pressed={modo === 'toda'}
-              className={`flex w-full items-center justify-between gap-3 rounded-2xl px-4 py-3 text-left transition ${
+              disabled={montoYaDevuelto > 0}
+              className={`flex w-full items-center justify-between gap-3 rounded-2xl px-4 py-3 text-left transition disabled:cursor-not-allowed disabled:opacity-40 ${
                 modo === 'toda' ? 'bg-accent/10' : 'bg-surface'
               }`}
             >
               <span className="text-sm font-semibold text-ink">Toda la venta</span>
               <span className="text-sm font-bold text-ink">{formatearMonto(venta.total)}</span>
             </button>
+            {montoYaDevuelto > 0 && (
+              <p className="text-xs text-amber-600">
+                Hay devoluciones parciales: selecciona solo los productos pendientes.
+              </p>
+            )}
             {(venta.productos || []).map((vp) => {
+              const yaDevuelto = productosYaDevueltos.has(vp.id)
               const activo = modo === 'productos' && seleccion.includes(vp.id)
               const nombre = vp.producto?.nombre || (vp.combo ? `Combo: ${vp.combo.nombre}` : `#${vp.id}`)
               return (
@@ -667,16 +686,19 @@ function ModalDevolucion({ venta, onConfirmar, onCancelar }) {
                   key={vp.id}
                   type="button"
                   onClick={() => {
+                    if (yaDevuelto) return
                     cambiarModo('productos')
                     alternarProducto(vp.id)
                   }}
                   aria-pressed={activo}
-                  className={`flex w-full items-center justify-between gap-3 rounded-2xl px-4 py-3 text-left transition ${
+                  disabled={yaDevuelto}
+                  className={`flex w-full items-center justify-between gap-3 rounded-2xl px-4 py-3 text-left transition disabled:cursor-not-allowed disabled:opacity-40 ${
                     activo ? 'bg-accent/10' : 'bg-surface'
                   }`}
                 >
                   <span className="min-w-0 truncate text-sm font-semibold text-ink">
                     {vp.cantidad}× {nombre}
+                    {yaDevuelto && <span className="ml-2 text-xs font-medium text-muted">· ya devuelta</span>}
                   </span>
                   <span className="shrink-0 text-sm font-bold text-ink">
                     {formatearMonto((vp.precioCongelado || 0) * (vp.cantidad || 0))}
@@ -1055,8 +1077,25 @@ function DetallePedidoPage() {
   const puedeDevolver = enEntregado && pedido?.venta?.id != null
 
   const montoDevueltoVenta = (ventaInfo?.devoluciones || []).reduce((a, d) => a + d.monto, 0)
+  const productosYaDevueltos = new Set(
+    (ventaInfo?.devoluciones || []).flatMap((d) => {
+      try {
+        return JSON.parse(d.ventaProductoIds || '[]')
+      } catch {
+        return []
+      }
+    }),
+  )
+  const todosProductosDevueltos =
+    ventaInfo != null &&
+    (ventaInfo.productos?.length || 0) > 0 &&
+    (ventaInfo.productos || []).every((vp) => productosYaDevueltos.has(vp.id))
+  // Solo se deshabilita el botón cuando TODA la venta quedó devuelta (monto
+  // cubierto en su totalidad o todos los productos marcados como devueltos).
+  // Si solo se devolvió parte (ej. la torta), queda disponible para lo pendiente.
   const ventaTotalmenteDevuelta =
-    ventaInfo != null && (ventaInfo.total ?? 0) > 0 && montoDevueltoVenta >= (ventaInfo.total ?? 0)
+    ventaInfo != null &&
+    ((ventaInfo.total ?? 0) > 0 && montoDevueltoVenta >= (ventaInfo.total ?? 0) ? true : todosProductosDevueltos)
 
   const abrirDevolucion = async () => {
     setError('')

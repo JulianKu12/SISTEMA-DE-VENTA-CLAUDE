@@ -893,7 +893,14 @@ export const obtenerVenta = asyncHandler(async (req, res) => {
       },
       devoluciones: {
         orderBy: { fechaHora: 'desc' },
-        select: { id: true, monto: true, motivo: true, medioDevolucion: true, fechaHora: true },
+        select: {
+          id: true,
+          monto: true,
+          motivo: true,
+          medioDevolucion: true,
+          fechaHora: true,
+          ventaProductoIds: true,
+        },
       },
     },
   })
