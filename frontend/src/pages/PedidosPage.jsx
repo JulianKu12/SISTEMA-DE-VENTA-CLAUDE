@@ -46,6 +46,21 @@ const CONFIG_ESTADOS = {
   },
 }
 
+const CONFIG_PAGO = {
+  Pagado: {
+    etiqueta: 'Pagado',
+    punto: 'bg-green-500',
+    fondo: 'bg-green-500/10',
+    texto: 'text-green-700',
+  },
+  Pendiente_pago: {
+    etiqueta: 'Pendiente de pago',
+    punto: 'bg-amber-500',
+    fondo: 'bg-amber-500/10',
+    texto: 'text-amber-700',
+  },
+}
+
 const ETIQUETAS_SECCION = {
   Pendiente: 'Pendientes',
   En_preparacion: 'En preparación',
@@ -113,6 +128,7 @@ function formatearTotal(total) {
 
 function TarjetaPedido({ pedido, onAbierto }) {
   const estado = CONFIG_ESTADOS[pedido.estadoPreparacion] || CONFIG_ESTADOS.Cancelado
+  const pago = CONFIG_PAGO[pedido.estadoPago] || CONFIG_PAGO.Pendiente_pago
   const nombreCliente = pedido.cliente?.nombre || pedido.nombreClienteLibre || 'Sin nombre'
   const tipo = pedido.tipo === 'A_domicilio' ? 'A domicilio' : 'Para recoger'
 
@@ -127,12 +143,20 @@ function TarjetaPedido({ pedido, onAbierto }) {
           <p className="text-sm font-bold text-ink">Pedido #{pedido.id}</p>
           <p className="text-xs text-muted">{formatTime(pedido.fechaHoraCreacion)} h</p>
         </div>
-        <span
-          className={`inline-flex shrink-0 items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-semibold ${estado.fondo} ${estado.texto}`}
-        >
-          <span className={`h-1.5 w-1.5 rounded-full ${estado.punto}`} />
-          {estado.etiqueta}
-        </span>
+        <div className="flex shrink-0 flex-col items-end gap-1.5">
+          <span
+            className={`inline-flex shrink-0 items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-semibold ${estado.fondo} ${estado.texto}`}
+          >
+            <span className={`h-1.5 w-1.5 rounded-full ${estado.punto}`} />
+            {estado.etiqueta}
+          </span>
+          <span
+            className={`inline-flex shrink-0 items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-semibold ${pago.fondo} ${pago.texto}`}
+          >
+            <span className={`h-1.5 w-1.5 rounded-full ${pago.punto}`} />
+            {pago.etiqueta}
+          </span>
+        </div>
       </div>
       <div className="min-w-0">
         <p className="truncate text-base font-semibold text-ink">{nombreCliente}</p>

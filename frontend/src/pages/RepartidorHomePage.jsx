@@ -1,7 +1,11 @@
 import { useCallback, useEffect, useState } from 'react'
 import Button from '../components/ui/Button'
 import { useAuth } from '../context/useAuth'
-import { cambiarEstadoPreparacion, obtenerPedidosRepartidor } from '../services/pedidos'
+import {
+  cambiarEstadoPago,
+  cambiarEstadoPreparacion,
+  obtenerPedidosRepartidor,
+} from '../services/pedidos'
 
 const CONFIG_ESTADOS = {
   Pendiente: {
@@ -47,6 +51,21 @@ function puedeMarcarEntregado(pedido) {
   return (transiciones[pedido.tipo]?.[pedido.estadoPreparacion] || []).includes('Entregado')
 }
 
+const CONFIG_PAGO = {
+  Pagado: {
+    etiqueta: 'Pagado',
+    punto: 'bg-green-500',
+    fondo: 'bg-green-500/10',
+    texto: 'text-green-700',
+  },
+  Pendiente_pago: {
+    etiqueta: 'Pendiente de pago',
+    punto: 'bg-amber-500',
+    fondo: 'bg-amber-500/10',
+    texto: 'text-amber-700',
+  },
+}
+
 function formatTime(iso) {
   if (!iso) return ''
   return new Date(iso).toLocaleTimeString('es-MX', {
@@ -61,12 +80,17 @@ function formatearMonto(total) {
   return total.toLocaleString('es-MX', { style: 'currency', currency: 'MXN' })
 }
 
-function TarjetaPedido({ pedido, onMarcarEntregar, ocupado }) {
+function TarjetaPedido({ pedido, onMarcarEntregar, onCobrar, ocupado }) {
   const estado = CONFIG_ESTADOS[pedido.estadoPreparacion] || CONFIG_ESTADOS.Cancelado
+  const pago = CONFIG_PAGO[pedido.estadoPago] || CONFIG_PAGO.Pendiente_pago
   const nombreCliente = pedido.cliente?.nombre || pedido.nombreClienteLibre || 'Sin nombre'
   const referencia =
     pedido.referencia?.descripcion || pedido.referenciaLibre || 'Sin referencia'
   const puedeEntregar = puedeMarcarEntregado(pedido)
+  const puedeCobrarPendiente =
+    pedido.estadoPreparacion === 'Entregado' &&
+    pedido.estadoPago === 'Pendiente_pago' &&
+    !pedido.noCobrar
   const [noCobrar, setNoCobrar] = useState(false)
 
   return (
@@ -76,12 +100,20 @@ function TarjetaPedido({ pedido, onMarcarEntregar, ocupado }) {
           <p className="text-sm font-bold text-ink">Pedido #{pedido.id}</p>
           <p className="text-xs text-muted">{formatTime(pedido.fechaHoraCreacion)} h</p>
         </div>
-        <span
-          className={`inline-flex shrink-0 items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-semibold ${estado.fondo} ${estado.texto}`}
-        >
-          <span className={`h-1.5 w-1.5 rounded-full ${estado.punto}`} />
-          {estado.etiqueta}
-        </span>
+        <div className="flex shrink-0 flex-col items-end gap-1.5">
+          <span
+            className={`inline-flex shrink-0 items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-semibold ${estado.fondo} ${estado.texto}`}
+          >
+            <span className={`h-1.5 w-1.5 rounded-full ${estado.punto}`} />
+            {estado.etiqueta}
+          </span>
+          <span
+            className={`inline-flex shrink-0 items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-semibold ${pago.fondo} ${pago.texto}`}
+          >
+            <span className={`h-1.5 w-1.5 rounded-full ${pago.punto}`} />
+            {pago.etiqueta}
+          </span>
+        </div>
       </div>
 
       <div className="mt-3 space-y-1">
@@ -142,6 +174,17 @@ function TarjetaPedido({ pedido, onMarcarEntregar, ocupado }) {
           </Button>
         </div>
       )}
+
+      {puedeCobrarPendiente && (
+        <Button
+          size="lg"
+          className="mt-4 w-full"
+          disabled={ocupado}
+          onClick={() => onCobrar(pedido.id)}
+        >
+          {ocupado ? 'Cobrando…' : 'Cobrar (venta pendiente)'}
+        </Button>
+      )}
     </article>
   )
 }
@@ -175,12 +218,48 @@ function RepartidorHomePage() {
     setError('')
     setMensaje('')
     setOcupadoId(id)
+    // Flujo unificado de entrega + pago (docs/07): al entregar un pedido
+    // Pendiente_pago y SIN "No cobrar", el repartidor también cobra en el
+    // mismo acto (una sola acción cubre entregar y cobrar; ya no depende del
+    // Administrador para el segundo paso).
+    const pendienteDePago = (pedidos || []).some(
+      (p) => p.id === id && p.estadoPago === 'Pendiente_pago',
+    )
     try {
       await cambiarEstadoPreparacion(id, { estadoPreparacion: 'Entregado', noCobrar })
-      setMensaje(noCobrar ? 'Pedido entregado y marcado como "No cobrar".' : 'Pedido marcado como Entregado.')
+      setMensaje(
+        noCobrar
+          ? 'Pedido entregado y marcado como "No cobrar".'
+          : 'Pedido marcado como Entregado.',
+      )
+      if (!noCobrar && pendienteDePago) {
+        try {
+          await cambiarEstadoPago(id, { estadoPago: 'Pagado' })
+          setMensaje('Pedido entregado y cobrado. Venta generada.')
+        } catch (err) {
+          setError(err.message)
+        }
+      }
       await cargar()
     } catch (err) {
       setError(err.message)
+      await cargar()
+    } finally {
+      setOcupadoId(null)
+    }
+  }
+
+  const cobrarPendiente = async (id) => {
+    setError('')
+    setMensaje('')
+    setOcupadoId(id)
+    try {
+      await cambiarEstadoPago(id, { estadoPago: 'Pagado' })
+      setMensaje('Pedido cobrado. Venta generada.')
+      await cargar()
+    } catch (err) {
+      setError(err.message)
+      await cargar()
     } finally {
       setOcupadoId(null)
     }
@@ -274,6 +353,7 @@ function RepartidorHomePage() {
                 pedido={pedido}
                 ocupado={ocupadoId === pedido.id}
                 onMarcarEntregar={marcarEntregado}
+                onCobrar={cobrarPendiente}
               />
             ))}
           </div>

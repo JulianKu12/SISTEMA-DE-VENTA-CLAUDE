@@ -211,6 +211,33 @@ try {
   ok(entregaSin.status === 200 && entregaSin.data.venta === undefined, 'Entregado sin noCobrar NO genera venta')
   ok(entregaSin.data.pedido.estadoPago === 'Pendiente_pago', 'pedido sigue Pendiente_pago al entregar sin noCobrar')
 
+  console.log('== Repartidor cobra SU pedido a domicilio (flujo unificado) ==')
+  // pedidoSinNC quedó Entregado+Pendiente_pago: el mismo Repartidor que lo
+  // entregó lo cobra ahora (docs/07: el repartidor recibe el dinero en la
+  // entrega). Ya no requiere 2 pasos separados ni depender del Administrador.
+  const ajenoPago = await req('PATCH', `/api/pedidos/${pedidoSinNC.data.id}/estado-pago`, { estadoPago: 'Pagado' }, tokenRep2)
+  ok(ajenoPago.status === 403, 'repartidor NO puede cobrar pedido de otro repartidor -> 403')
+  const propioPago = await req('PATCH', `/api/pedidos/${pedidoSinNC.data.id}/estado-pago`, { estadoPago: 'Pagado' }, tokenRep)
+  ok(
+    propioPago.status === 200 &&
+      propioPago.data.pedido.estadoPreparacion === 'Entregado' &&
+      propioPago.data.pedido.estadoPago === 'Pagado',
+    'flujo unificado: el repartidor entrega y cobra su pedido (Entregado + Pagado) sin admin'
+  )
+  ok(propioPago.data.venta && propioPago.data.venta.noCobrar === false && propioPago.data.venta.total === pedidoSinNC.data.total, 'venta generada por el repartidor al cobrar (total del pedido, sin noCobrar)')
+
+  console.log('== Repartidor NO puede cobrar un Para_recoger (sin repartidor) ==')
+  const pRecoger = await req('POST', '/api/pedidos', {
+    tipo: 'Para_recoger', origen: 'Telefono', nombreClienteLibre: 'Cli Recoger',
+    productos: [{ productoId: coca.id, cantidad: 1 }],
+    metodoPago: 'Efectivo', montoReferenciaPago: 20,
+  }, tokenAdmin)
+  ok(pRecoger.status === 201 && pRecoger.data.estadoPago === 'Pendiente_pago', 'admin crea pedido Para_recoger (Pendiente_pago)')
+  const pagoRecogerRep = await req('PATCH', `/api/pedidos/${pRecoger.data.id}/estado-pago`, { estadoPago: 'Pagado' }, tokenRep)
+  ok(pagoRecogerRep.status === 403, 'repartidor NO puede cobrar un pedido Para_recoger -> 403')
+  const pagoRecogerAdmin = await req('PATCH', `/api/pedidos/${pRecoger.data.id}/estado-pago`, { estadoPago: 'Pagado' }, tokenAdmin)
+  ok(pagoRecogerAdmin.status === 200 && pagoRecogerAdmin.data.pedido.estadoPago === 'Pagado', 'Administrador sigue pudiendo cobrar cualquier pedido (Para_recoger)')
+
   console.log('== Sin token -> 401 ==')
   const sinToken = await req('GET', '/api/pedidos', undefined, null)
   ok(sinToken.status === 401, 'peticion sin token -> 401')

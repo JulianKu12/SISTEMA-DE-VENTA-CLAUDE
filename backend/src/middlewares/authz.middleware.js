@@ -67,3 +67,30 @@ export const repartidorSoloEntregado = async (req, _res, next) => {
     next(e)
   }
 }
+
+// Repartidor puede cobrar (pasar estado_pago a Pagado) SOLO un pedido que le
+// esté asignado y que sea A_domicilio: él es quien recibe el dinero en la
+// entrega (docs/07). El Administrador lo puede hacer en cualquier pedido sin
+// restricción (ej. Para_recoger, que no tiene repartidor).
+export const repartidorSoloEstadoPago = async (req, _res, next) => {
+  try {
+    if (req.usuario?.tipo === 'Administrador') return next()
+    const empleadoId = req.usuario.empleado?.id
+    if (empleadoId == null) {
+      return next(new HttpError(403, 'El Repartidor no tiene un perfil de repartidor vinculado'))
+    }
+    const pedido = await prisma.pedido.findUnique({ where: { id: Number(req.params.id) } })
+    if (!pedido) {
+      return next(new HttpError(404, 'Pedido no encontrado'))
+    }
+    if (pedido.tipo !== 'A_domicilio') {
+      return next(new HttpError(403, 'Un Repartidor solo puede cobrar pedidos A_domicilio'))
+    }
+    if (pedido.repartidorId !== empleadoId) {
+      return next(new HttpError(403, 'Solo puedes cobrar tus propios pedidos a domicilio'))
+    }
+    next()
+  } catch (e) {
+    next(e)
+  }
+}
