@@ -26,7 +26,7 @@ const includePedido = {
   venta: { select: { id: true, total: true, metodoPago: true, noCobrar: true } },
   productos: {
     include: {
-      producto: { select: { id: true, nombre: true } },
+      producto: { select: { id: true, nombre: true, disponibleHoy: true, estado: true } },
       combo: { select: { id: true, nombre: true } },
       mitadYMitad: {
         include: {
