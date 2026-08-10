@@ -3,6 +3,7 @@ import { useAuth } from './context/useAuth'
 import LoginPage from './pages/LoginPage'
 import NuevoPedidoPage from './pages/NuevoPedidoPage'
 import PedidosPage from './pages/PedidosPage'
+import RepartidorHomePage from './pages/RepartidorHomePage'
 import DetallePedidoPage from './pages/DetallePedidoPage'
 import ConfiguracionMenuPage from './pages/ConfiguracionMenuPage'
 import RepartidoresPage from './pages/RepartidoresPage'
@@ -17,6 +18,20 @@ function RutaProtegida({ children }) {
   return children
 }
 
+// Fail-safe (docs/07): cualquier ruta de Administrador es inaccesible para un
+// Repartidor — si intenta navegar directo a la URL, se le redirige a "/".
+function SoloAdministrador({ children }) {
+  const { usuario } = useAuth()
+  if (usuario?.tipo === 'Repartidor') return <Navigate to="/" replace />
+  return children
+}
+
+function PaginaInicio() {
+  const { usuario } = useAuth()
+  if (usuario?.tipo === 'Repartidor') return <RepartidorHomePage />
+  return <PedidosPage />
+}
+
 function App() {
   return (
     <Routes>
@@ -25,7 +40,7 @@ function App() {
         path="/"
         element={
           <RutaProtegida>
-            <PedidosPage />
+            <PaginaInicio />
           </RutaProtegida>
         }
       />
@@ -33,7 +48,9 @@ function App() {
         path="/pedidos/nuevo"
         element={
           <RutaProtegida>
-            <NuevoPedidoPage />
+            <SoloAdministrador>
+              <NuevoPedidoPage />
+            </SoloAdministrador>
           </RutaProtegida>
         }
       />
@@ -41,7 +58,9 @@ function App() {
         path="/pedidos/:id"
         element={
           <RutaProtegida>
-            <DetallePedidoPage />
+            <SoloAdministrador>
+              <DetallePedidoPage />
+            </SoloAdministrador>
           </RutaProtegida>
         }
       />
@@ -49,7 +68,9 @@ function App() {
         path="/configuracion"
         element={
           <RutaProtegida>
-            <ConfiguracionMenuPage />
+            <SoloAdministrador>
+              <ConfiguracionMenuPage />
+            </SoloAdministrador>
           </RutaProtegida>
         }
       />
@@ -57,7 +78,9 @@ function App() {
         path="/inventario"
         element={
           <RutaProtegida>
-            <InventarioPage />
+            <SoloAdministrador>
+              <InventarioPage />
+            </SoloAdministrador>
           </RutaProtegida>
         }
       />
@@ -65,7 +88,9 @@ function App() {
         path="/clientes"
         element={
           <RutaProtegida>
-            <ClientesPage />
+            <SoloAdministrador>
+              <ClientesPage />
+            </SoloAdministrador>
           </RutaProtegida>
         }
       />
@@ -73,7 +98,9 @@ function App() {
         path="/repartidores"
         element={
           <RutaProtegida>
-            <RepartidoresPage />
+            <SoloAdministrador>
+              <RepartidoresPage />
+            </SoloAdministrador>
           </RutaProtegida>
         }
       />
@@ -81,7 +108,9 @@ function App() {
         path="/caja"
         element={
           <RutaProtegida>
-            <CajaPage />
+            <SoloAdministrador>
+              <CajaPage />
+            </SoloAdministrador>
           </RutaProtegida>
         }
       />
@@ -89,7 +118,9 @@ function App() {
         path="/gastos"
         element={
           <RutaProtegida>
-            <CajaPage pestanaInicial="gastos" />
+            <SoloAdministrador>
+              <CajaPage pestanaInicial="gastos" />
+            </SoloAdministrador>
           </RutaProtegida>
         }
       />
@@ -97,7 +128,9 @@ function App() {
         path="/reportes"
         element={
           <RutaProtegida>
-            <ReportesPage />
+            <SoloAdministrador>
+              <ReportesPage />
+            </SoloAdministrador>
           </RutaProtegida>
         }
       />

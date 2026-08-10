@@ -69,6 +69,10 @@ export async function obtenerPedido(id) {
   return peticionAutenticada(`/api/pedidos/${id}/detalle`)
 }
 
+export async function obtenerPedidosRepartidor(repartidorId) {
+  return peticionAutenticada(`/api/pedidos/repartidor/${repartidorId}`)
+}
+
 export async function cambiarEstadoPago(id, payload) {
   return peticionAutenticada(`/api/pedidos/${id}/estado-pago`, {
     method: 'PATCH',

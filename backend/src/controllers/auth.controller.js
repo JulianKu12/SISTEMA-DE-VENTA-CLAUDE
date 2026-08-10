@@ -14,7 +14,10 @@ export const login = asyncHandler(async (req, res) => {
     throw new HttpError(400, 'usuario y contraseña son obligatorios')
   }
 
-  const cuenta = await prisma.usuario.findUnique({ where: { usuario } })
+  const cuenta = await prisma.usuario.findUnique({
+    where: { usuario },
+    include: { empleado: { select: { id: true, nombre: true, estadoDisponibilidad: true } } },
+  })
   // Las contraseñas se guardan hasheadas con bcrypt (nunca en texto plano).
   // `bcrypt.compare` es a prueba de "timing attack" y reutiliza los hashes
   // viejos (sin prefijo bcrypt) fallando la comparación.
@@ -39,6 +42,9 @@ export const login = asyncHandler(async (req, res) => {
       tipo: cuenta.tipo,
       nombre: cuenta.nombre,
       usuario: cuenta.usuario,
+      ...(cuenta.empleado
+        ? { empleado: { id: cuenta.empleado.id, nombre: cuenta.empleado.nombre } }
+        : {}),
     },
   })
 })
