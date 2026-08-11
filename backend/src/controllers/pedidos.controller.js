@@ -74,6 +74,7 @@ async function itemsDesdePp(tx, filas) {
         cantidad: pp.cantidad,
         esMitadYMitad: pp.esMitadYMitad,
         precioCongelado: pp.precioCongelado,
+        nota: pp.nota ?? undefined,
         pedidoProductoId: pp.id,
         ...(pp.esMitadYMitad && pp.mitadYMitad
           ? {
@@ -101,7 +102,16 @@ async function itemsDesdePp(tx, filas) {
       comboId,
       cantidad: g.filas[0].cantidad / cpCant,
       precioCongelado: g.comboPrecioCongelado ?? combo.precioEspecial,
+      nota: g.filas[0].notaCombo ?? undefined,
       pedidoProductos: g.filas.map((f) => ({ productoId: f.productoId, pedidoProductoId: f.id })),
+      productos: g.filas.map((f) => ({
+        productoId: f.productoId,
+        nota: f.nota ?? undefined,
+        modificadores: (f.modificadores || []).map((m) => ({
+          modificadorId: m.modificadorId,
+          costoAplicado: m.costoAplicado,
+        })),
+      })),
     })
   }
 
@@ -298,8 +308,21 @@ export const crearPedido = asyncHandler(async (req, res) => {
               esMitadYMitad: false,
               comboId: it.comboId,
               comboPrecioCongelado: it.comboPrecioCongelado,
+              nota: dp.nota || null,
+              // La nota general del combo se guarda en la primera fila expandida
+              // (todas comparten comboId) y se reconstruye leyendo filas[0].
+              ...(filas.length === 0 ? { notaCombo: it.nota || null } : {}),
             },
           })
+          for (const m of dp.modificadores || []) {
+            await tx.pedido_Producto_Modificador.create({
+              data: {
+                pedidoProductoId: pp.id,
+                modificadorId: m.modificadorId,
+                costoAplicado: m.costoAplicado,
+              },
+            })
+          }
           filas.push({ productoId: dp.productoId, pedidoProductoId: pp.id })
         }
         itemsVenta.push({
@@ -317,6 +340,7 @@ export const crearPedido = asyncHandler(async (req, res) => {
             cantidad: d.cantidad,
             precioCongelado: d.precioCongelado,
             esMitadYMitad: d.esMitadYMitad,
+            nota: d.nota || null,
           },
         })
         if (d.esMitadYMitad) {
@@ -817,6 +841,7 @@ export const editarPedido = asyncHandler(async (req, res) => {
       for (const item of agregarProductos) {
         const it = await procesarItem(tx, item)
         if (it.tipo === 'combo') {
+          let primeraFila = true
           for (const dp of it.detalleProductos) {
             const pp = await tx.pedido_Producto.create({
               data: {
@@ -827,8 +852,20 @@ export const editarPedido = asyncHandler(async (req, res) => {
                 esMitadYMitad: false,
                 comboId: it.comboId,
                 comboPrecioCongelado: it.comboPrecioCongelado,
+                nota: dp.nota || null,
+                ...(primeraFila ? { notaCombo: it.nota || null } : {}),
               },
             })
+            primeraFila = false
+            for (const m of dp.modificadores || []) {
+              await tx.pedido_Producto_Modificador.create({
+                data: {
+                  pedidoProductoId: pp.id,
+                  modificadorId: m.modificadorId,
+                  costoAplicado: m.costoAplicado,
+                },
+              })
+            }
             nuevosIds.push(pp.id)
           }
         } else {
@@ -840,6 +877,7 @@ export const editarPedido = asyncHandler(async (req, res) => {
               cantidad: d.cantidad,
               precioCongelado: d.precioCongelado,
               esMitadYMitad: d.esMitadYMitad,
+              nota: d.nota || null,
             },
           })
           nuevosIds.push(pp.id)

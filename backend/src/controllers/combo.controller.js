@@ -3,7 +3,15 @@ import { asyncHandler } from '../utils/asyncHandler.js'
 import { HttpError } from '../utils/httpError.js'
 
 const includeCompleto = {
-  productos: { include: { producto: true } },
+  productos: {
+    include: {
+      producto: {
+        include: {
+          productoModificadores: { include: { modificador: true } },
+        },
+      },
+    },
+  },
 }
 
 async function validarItemsCombo(productos) {

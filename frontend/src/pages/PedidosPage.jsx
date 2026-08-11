@@ -144,18 +144,25 @@ function TarjetaPedido({ pedido, onAbierto }) {
           <p className="text-xs text-muted">{formatTime(pedido.fechaHoraCreacion)} h</p>
         </div>
         <div className="flex shrink-0 flex-col items-end gap-1.5">
+          {pedido.noCobrar && (
+            <span className="inline-flex shrink-0 items-center gap-1.5 rounded-full bg-amber-500/15 px-2.5 py-1 text-xs font-semibold text-amber-700">
+              Cortesía · No pagar
+            </span>
+          )}
           <span
             className={`inline-flex shrink-0 items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-semibold ${estado.fondo} ${estado.texto}`}
           >
             <span className={`h-1.5 w-1.5 rounded-full ${estado.punto}`} />
             {estado.etiqueta}
           </span>
-          <span
-            className={`inline-flex shrink-0 items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-semibold ${pago.fondo} ${pago.texto}`}
-          >
-            <span className={`h-1.5 w-1.5 rounded-full ${pago.punto}`} />
-            {pago.etiqueta}
-          </span>
+          {!pedido.noCobrar && (
+            <span
+              className={`inline-flex shrink-0 items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-semibold ${pago.fondo} ${pago.texto}`}
+            >
+              <span className={`h-1.5 w-1.5 rounded-full ${pago.punto}`} />
+              {pago.etiqueta}
+            </span>
+          )}
         </div>
       </div>
       <div className="min-w-0">

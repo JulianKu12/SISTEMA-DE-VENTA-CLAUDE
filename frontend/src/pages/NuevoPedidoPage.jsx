@@ -6,6 +6,7 @@ import { crearPedido } from '../services/pedidos'
 import { crearCliente, crearReferencia, listarClientes } from '../services/clientes'
 import { obtenerConfiguracion } from '../services/configuracion'
 import { agregarLinea } from '../utils/ticket'
+import BannerToaster from '../components/ui/BannerToaster'
 
 const TIPOS_PEDIDO = [
   { id: 'Para_recoger', etiqueta: 'Para recoger' },
@@ -389,6 +390,210 @@ function ModalProducto({ producto, productosMitad, onCancelar, onAgregar }) {
   )
 }
 
+function ModalCombo({ combo, onCancelar, onAgregar }) {
+  const [seleccion, setSeleccion] = useState({})
+  const [notas, setNotas] = useState({})
+  const [notaCombo, setNotaCombo] = useState('')
+
+  const productosDelCombo = (combo.productos || []).filter((cp) => cp.producto)
+
+  const modificadoresDe = (producto) =>
+    (producto.productoModificadores || [])
+      .map((pm) => pm.modificador)
+      .filter((m) => m && m.estado === 'Activo')
+
+  useEffect(() => {
+    const overflowAnterior = document.body.style.overflow
+    document.body.style.overflow = 'hidden'
+    const cerrarConEsc = (e) => {
+      if (e.key === 'Escape') onCancelar()
+    }
+    window.addEventListener('keydown', cerrarConEsc)
+    return () => {
+      document.body.style.overflow = overflowAnterior
+      window.removeEventListener('keydown', cerrarConEsc)
+    }
+  }, [onCancelar])
+
+  const toggleMod = (productoId, modId) => {
+    setSeleccion((s) => ({ ...s, [productoId]: { ...(s[productoId] || {}), [modId]: !s[productoId]?.[modId] } }))
+  }
+
+  const confirmar = () => {
+    onAgregar({
+      key: crypto.randomUUID(),
+      tipoLinea: 'combo',
+      comboId: combo.id,
+      nombre: combo.nombre,
+      esMitadYMitad: false,
+      sabor1: null,
+      sabor2: null,
+      modificadores: [],
+      nota: notaCombo.trim(),
+      productos: productosDelCombo.map((cp) => ({
+        productoId: cp.producto.id,
+        nombre: cp.producto.nombre,
+        modificadores: modificadoresDe(cp.producto).filter((m) => seleccion[cp.producto.id]?.[m.id]),
+        nota: notas[cp.producto.id]?.trim() || '',
+      })),
+      precioUnitario: combo.precioEspecial,
+      cantidad: 1,
+    })
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-end justify-center" role="dialog" aria-modal="true">
+      <div
+        className="absolute inset-0 animate-[fade-in_200ms_ease-out] bg-ink/40 backdrop-blur-sm"
+        onClick={onCancelar}
+      />
+      <div className="relative max-h-[88vh] w-full max-w-2xl animate-[sheet-up_280ms_ease-out] overflow-y-auto rounded-t-3xl bg-card shadow-card">
+        <div className="sticky top-0 z-10 rounded-t-3xl bg-card px-6 pb-4 pt-3">
+          <div className="mx-auto mb-4 h-1.5 w-10 rounded-full bg-muted/30" />
+          <div className="flex items-start justify-between gap-4">
+            <div className="min-w-0">
+              <h2 className="text-xl font-bold text-ink">Combo · {combo.nombre}</h2>
+              <p className="text-sm text-muted">
+                {productosDelCombo.length} producto{productosDelCombo.length === 1 ? '' : 's'} incluido
+                {productosDelCombo.length === 1 ? '' : 's'} · {formatearMonto(combo.precioEspecial)}
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={onCancelar}
+              aria-label="Cerrar"
+              className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-surface text-muted transition active:scale-95"
+            >
+              <IconoEquis />
+            </button>
+          </div>
+        </div>
+
+        <div className="space-y-6 px-6 pb-6">
+          {productosDelCombo.map((cp) => {
+            const producto = cp.producto
+            const modificadores = modificadoresDe(producto)
+            const grupos = {
+              quitar: modificadores.filter((m) => m.tipo === 'Quitar'),
+              agregar: modificadores.filter((m) => m.tipo === 'Agregar'),
+              sustituir: modificadores.filter((m) => m.tipo === 'Sustituir'),
+            }
+            const tieneConfig =
+              producto.tipo === 'Con_receta' ||
+              (producto.productoModificadores || []).some(
+                (pm) => pm.modificador?.estado === 'Activo',
+              )
+            return (
+              <section key={producto.id} className="rounded-2xl bg-surface p-4">
+                <p className="text-sm font-bold text-ink">
+                  {producto.nombre}
+                  {cp.cantidad > 1 ? ` ×${cp.cantidad}` : ''}
+                </p>
+
+                {grupos.quitar.length > 0 && (
+                  <div className="mt-3">
+                    <EtiquetaSeccion>Quitar</EtiquetaSeccion>
+                    <div className="space-y-2">
+                      {grupos.quitar.map((m) => (
+                        <FilaModificador
+                          key={m.id}
+                          marcado={!!seleccion[producto.id]?.[m.id]}
+                          onToggle={() => toggleMod(producto.id, m.id)}
+                          etiqueta={m.nombre}
+                          costo={m.costoAdicional || 0}
+                          tono="quitar"
+                        />
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                {grupos.agregar.length > 0 && (
+                  <div className="mt-3">
+                    <EtiquetaSeccion>Agregar</EtiquetaSeccion>
+                    <div className="space-y-2">
+                      {grupos.agregar.map((m) => (
+                        <FilaModificador
+                          key={m.id}
+                          marcado={!!seleccion[producto.id]?.[m.id]}
+                          onToggle={() => toggleMod(producto.id, m.id)}
+                          etiqueta={m.nombre}
+                          costo={m.costoAdicional || 0}
+                          tono="agregar"
+                        />
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                {grupos.sustituir.length > 0 && (
+                  <div className="mt-3">
+                    <EtiquetaSeccion>Sustituir</EtiquetaSeccion>
+                    <div className="space-y-2">
+                      {grupos.sustituir.map((m) => {
+                        const afectado = m.ingredienteAfectado?.nombre || 'el ingrediente'
+                        const sustituto = m.ingredienteSustituto?.nombre || ''
+                        return (
+                          <FilaModificador
+                            key={m.id}
+                            marcado={!!seleccion[producto.id]?.[m.id]}
+                            onToggle={() => toggleMod(producto.id, m.id)}
+                            etiqueta={`Sustituir ${afectado} por ${sustituto}`.trim()}
+                            costo={m.costoAdicional || 0}
+                            tono="sustituir"
+                          />
+                        )
+                      })}
+                    </div>
+                  </div>
+                )}
+
+                {tieneConfig && (
+                  <div className="mt-3">
+                    <EtiquetaSeccion>Nota del producto</EtiquetaSeccion>
+                    <textarea
+                      value={notas[producto.id] || ''}
+                      onChange={(e) => setNotas((n) => ({ ...n, [producto.id]: e.target.value }))}
+                      placeholder={`Nota para ${producto.nombre}…`}
+                      rows={2}
+                      className="w-full resize-none rounded-2xl border-none bg-card px-4 py-3 text-base text-ink outline-none transition placeholder:text-muted/70 focus:ring-2 focus:ring-accent/40"
+                    />
+                  </div>
+                )}
+              </section>
+            )
+          })}
+
+          <section>
+            <EtiquetaSeccion>Nota del combo</EtiquetaSeccion>
+            <textarea
+              value={notaCombo}
+              onChange={(e) => setNotaCombo(e.target.value)}
+              placeholder="Ej. el cliente quiere el combo bien envuelto…"
+              rows={2}
+              className="w-full resize-none rounded-2xl border-none bg-input px-4 py-3 text-base text-ink outline-none transition placeholder:text-muted/70 focus:ring-2 focus:ring-accent/40"
+            />
+          </section>
+
+          <p className="rounded-2xl bg-muted/5 px-4 py-3 text-xs text-muted">
+            El precio del combo es cerrado ({formatearMonto(combo.precioEspecial)}): los
+            modificadores ajustan la preparación pero no cambian el precio.
+          </p>
+
+          <div className="flex items-center gap-3 pt-1">
+            <Button variant="secondary" size="md" className="flex-1" onClick={onCancelar}>
+              Cancelar
+            </Button>
+            <Button size="md" className="flex-1" onClick={confirmar}>
+              Agregar · {formatearMonto(combo.precioEspecial)}
+            </Button>
+          </div>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 function NuevoPedidoPage() {
   const navigate = useNavigate()
   const [tipo, setTipo] = useState(null)
@@ -398,6 +603,7 @@ function NuevoPedidoPage() {
   const [error, setError] = useState('')
   const [ticket, setTicket] = useState([])
   const [modalProducto, setModalProducto] = useState(null)
+  const [modalCombo, setModalCombo] = useState(null)
   const [ticketAbierto, setTicketAbierto] = useState(true)
   const [clientes, setClientes] = useState(null)
   const [modoCliente, setModoCliente] = useState('libre')
@@ -507,6 +713,18 @@ function NuevoPedidoPage() {
   }
 
   const seleccionarCombo = (combo) => {
+    const productosDelCombo = (combo.productos || []).filter((cp) => cp.producto)
+    const algunoConConfig = productosDelCombo.some(
+      (cp) =>
+        cp.producto.tipo === 'Con_receta' ||
+        (cp.producto.productoModificadores || []).some(
+          (pm) => pm.modificador?.estado === 'Activo',
+        ),
+    )
+    if (algunoConConfig) {
+      setModalCombo(combo)
+      return
+    }
     agregarLinea(setTicket, {
       key: crypto.randomUUID(),
       tipoLinea: 'combo',
@@ -520,6 +738,11 @@ function NuevoPedidoPage() {
       precioUnitario: combo.precioEspecial,
       cantidad: 1,
     })
+  }
+
+  const manejarAgregarCombo = (config) => {
+    agregarLinea(setTicket, config)
+    setModalCombo(null)
   }
 
   const manejarAgregarModal = (config) => {
@@ -662,7 +885,19 @@ function NuevoPedidoPage() {
 
     const productosEnvio = ticket.map((item) =>
       item.tipoLinea === 'combo'
-        ? { comboId: item.comboId, cantidad: item.cantidad }
+        ? {
+            comboId: item.comboId,
+            cantidad: item.cantidad,
+            nota: item.nota,
+            productos: (item.productos || []).map((p) => ({
+              productoId: p.productoId,
+              nota: p.nota,
+              modificadores: p.modificadores.map((m) => ({
+                modificadorId: m.id,
+                costoAplicado: m.costoAdicional || 0,
+              })),
+            })),
+          }
         : {
             productoId: item.productoId,
             cantidad: item.cantidad,
@@ -674,6 +909,7 @@ function NuevoPedidoPage() {
               modificadorId: m.id,
               costoAplicado: m.costoAdicional || 0,
             })),
+            nota: item.nota,
           },
     )
 
@@ -711,6 +947,7 @@ function NuevoPedidoPage() {
 
   return (
     <main className="min-h-screen bg-surface pb-16">
+      <BannerToaster error={error || errorConfirmacion} onCerrarError={() => setError('')} />
       <header className="sticky top-0 z-30 border-b border-muted/10 bg-surface/90 backdrop-blur-md">
         <div className="mx-auto flex max-w-7xl items-center gap-3 px-4 py-4 sm:px-6 lg:px-8">
           <button
@@ -1267,8 +1504,27 @@ function NuevoPedidoPage() {
                                   {item.modificadores.map((m) => m.nombre).join(', ')}
                                 </p>
                               )}
+                              {item.tipoLinea === 'combo' && item.productos?.length > 0 && (
+                                <ul className="mt-1 space-y-0.5">
+                                  {item.productos.map((p) => {
+                                    const mods = (p.modificadores || [])
+                                      .map((m) => m.nombre)
+                                      .join(', ')
+                                    return p.modificadores?.length > 0 || p.nota ? (
+                                      <li key={p.productoId} className="text-xs text-muted">
+                                        <span className="font-semibold text-ink">{p.nombre}</span>
+                                        {mods ? ` — ${mods}` : ''}
+                                        {p.nota ? ` · Nota: ${p.nota}` : ''}
+                                      </li>
+                                    ) : null
+                                  })}
+                                </ul>
+                              )}
                               {item.nota && (
-                                <p className="text-xs italic text-muted">Nota: {item.nota}</p>
+                                <p className="text-xs italic text-muted">
+                                  {item.tipoLinea === 'combo' ? 'Nota del combo: ' : 'Nota: '}
+                                  {item.nota}
+                                </p>
                               )}
                             </div>
                             <button
@@ -1367,6 +1623,15 @@ function NuevoPedidoPage() {
           productosMitad={productosMitad}
           onCancelar={() => setModalProducto(null)}
           onAgregar={manejarAgregarModal}
+        />
+      )}
+
+      {modalCombo && (
+        <ModalCombo
+          key={modalCombo.id}
+          combo={modalCombo}
+          onCancelar={() => setModalCombo(null)}
+          onAgregar={manejarAgregarCombo}
         />
       )}
 

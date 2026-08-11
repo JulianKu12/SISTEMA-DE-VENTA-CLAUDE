@@ -280,6 +280,7 @@ model Venta_Producto {
   esMitadYMitad   Boolean @default(false)
   comboId         Int?
   comboPrecioCongelado Float?
+  nota            String?
 
   venta         Venta                        @relation(fields: [ventaId], references: [id])
   producto      Producto                     @relation(fields: [productoId], references: [id])
@@ -455,6 +456,8 @@ model Pedido_Producto {
   esMitadYMitad   Boolean @default(false)
   comboId         Int?
   comboPrecioCongelado Float?
+  nota            String?
+  notaCombo       String?
 
   pedido      Pedido                        @relation(fields: [pedidoId], references: [id])
   producto    Producto                      @relation(fields: [productoId], references: [id])

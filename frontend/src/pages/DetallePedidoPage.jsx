@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 import Button from '../components/ui/Button'
 import ConfirmModal from '../components/ui/ConfirmModal'
+import BannerToaster from '../components/ui/BannerToaster'
 import { obtenerCombos, obtenerProductos } from '../services/catalogo'
 import { obtenerConfiguracion } from '../services/configuracion'
 import {
@@ -155,7 +156,7 @@ function construirLineas(pedido) {
           comboId: pp.comboId,
           nombre: pp.combo?.nombre || 'Combo',
           comboPrecioCongelado: pp.comboPrecioCongelado,
-          nota: pp.nota ?? '',
+          nota: pp.notaCombo ?? '',
           filas: [],
           pedidoProductoIds: [],
         })
@@ -1179,6 +1180,7 @@ function DetallePedidoPage() {
       </header>
 
       <div className="mx-auto max-w-5xl space-y-6 px-4 pt-6 sm:px-6 lg:px-8">
+        <BannerToaster error={error} notificacion={notificacion} onCerrarError={() => setError('')} />
         {error && (
           <div className="rounded-2xl bg-danger/10 px-4 py-3 text-sm font-medium text-danger">
             {error}
@@ -1290,6 +1292,32 @@ function DetallePedidoPage() {
                                 .map((f) => `${f.cantidad}× ${f.producto?.nombre || 'Producto'}`)
                                 .join(', ')}
                             </p>
+                            {linea.filas.some(
+                              (f) => (f.modificadores?.length || 0) > 0 || f.nota,
+                            ) && (
+                              <ul className="mt-1.5 space-y-0.5">
+                                {linea.filas.map((f) => {
+                                  const mods = (f.modificadores || [])
+                                    .map((m) => m.modificador?.nombre || m.nombre)
+                                    .join(', ')
+                                  return (
+                                    <li key={f.id} className="text-xs text-muted">
+                                      <span className="font-semibold text-ink">
+                                        {f.producto?.nombre || 'Producto'}
+                                        {f.cantidad > 1 ? ` ×${f.cantidad}` : ''}
+                                      </span>
+                                      {mods ? ` — ${mods}` : ''}
+                                      {f.nota ? ` · Nota: ${f.nota}` : ''}
+                                    </li>
+                                  )
+                                })}
+                              </ul>
+                            )}
+                            {linea.nota && (
+                              <p className="mt-1 text-xs italic text-muted">
+                                Nota del combo: {linea.nota}
+                              </p>
+                            )}
                           </div>
                           {edicionActiva &&
                             editable && (
@@ -1331,6 +1359,9 @@ function DetallePedidoPage() {
                                   .map((m) => m.modificador?.nombre || m.nombre)
                                   .join(', ')}
                               </p>
+                            )}
+                            {linea.nota && (
+                              <p className="mt-0.5 text-xs italic text-muted">Nota: {linea.nota}</p>
                             )}
                           </div>
                           {edicionActiva && editable && (
@@ -1386,13 +1417,20 @@ function DetallePedidoPage() {
         {(editable || cancelable || enEntregado) && (
           <section className="rounded-3xl bg-card p-5 shadow-card">
             <EtiquetaSeccion>Acciones</EtiquetaSeccion>
+            {esDomicilio && pedido.repartidor && (
+              <p className="mb-3 rounded-2xl bg-surface px-4 py-3 text-sm text-muted">
+                Este pedido está asignado a{' '}
+                <span className="font-semibold text-ink">{pedido.repartidor.nombre}</span>: el
+                repartidor gestiona la entrega y el cobro.
+              </p>
+            )}
             <div className="flex flex-wrap gap-3">
               {enPendiente && (
                 <Button size="md" onClick={pausar} disabled={ocupado}>
                   Pasar a En preparación
                 </Button>
               )}
-              {enPreparacion && esDomicilio && (
+              {enPreparacion && esDomicilio && !pedido.repartidor && (
                 <Button size="md" onClick={marcarEnviado} disabled={ocupado}>
                   Marcar Enviado
                 </Button>
@@ -1402,7 +1440,7 @@ function DetallePedidoPage() {
                   Marcar Entregado
                 </Button>
               )}
-              {enEntregado && pendienteDePago && (
+              {enEntregado && pendienteDePago && !(esDomicilio && pedido.repartidor) && (
                 <Button size="md" onClick={marcarPagado} disabled={ocupado}>
                   Marcar Pagado
                 </Button>

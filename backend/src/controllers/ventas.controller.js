@@ -82,10 +82,27 @@ function aplicarModificadores(basePorUnidad, modificadoresDetallados) {
 // cada Producto incluido (Combo_Producto), cobra el precio del combo (precio
 // especial o "otro precio" manual) y devuelve una fila por producto para
 // Venta_Producto/Pedido_Producto con su comboId.
+//
+// El combo mantiene un "precio cerrado": los modificadores que se pidan por
+// producto incluido ajustan el consumo de inventario (quitar/agregar/sustituir
+// ingredientes) pero NUNCA cambian el precio cobrado del combo. Opcionalmente
+// cada producto puede llevar su propia nota (`productos: [{ productoId, nota,
+// modificadores }]`) y el combo una nota general (`item.nota`).
 async function procesarCombo(tx, item, opciones = {}) {
   const combo = await tx.combo.findUnique({
     where: { id: Number(item.comboId) },
-    include: { productos: { include: { producto: { include: { productoIngredientes: true } } } } },
+    include: {
+      productos: {
+        include: {
+          producto: {
+            include: {
+              productoIngredientes: true,
+              productoModificadores: { include: { modificador: true } },
+            },
+          },
+        },
+      },
+    },
   })
   if (!combo) throw new HttpError(404, `El combo ${item.comboId} no existe`)
   if (combo.estado !== 'Activo') {
@@ -94,9 +111,6 @@ async function procesarCombo(tx, item, opciones = {}) {
   if (!combo.productos.length) {
     throw new HttpError(400, `El combo "${combo.nombre}" no tiene productos asociados`)
   }
-  if (Array.isArray(item.modificadores) && item.modificadores.length > 0) {
-    throw new HttpError(400, 'Los combos no admiten modificadores (precio cerrado)')
-  }
 
   const cantidad = Number(item.cantidad)
   validarCantidad(cantidad)
@@ -104,12 +118,22 @@ async function procesarCombo(tx, item, opciones = {}) {
   // Precio por unidad del combo: "otro precio" manual (precioCongelado) o el
   // precio_especial del combo (docs/03).
   const comboPrecioCongelado = item.precioCongelado ?? combo.precioEspecial
+  const notaCombo = typeof item.nota === 'string' ? item.nota.trim() : ''
 
   // Mapa para vincular los Pedido_Producto ya creados al generar la Venta
   // desde un Pedido (pedidoProductos: [{productoId, pedidoProductoId}]).
   const vinculos = new Map()
   if (Array.isArray(item.pedidoProductos)) {
     for (const v of item.pedidoProductos) vinculos.set(Number(v.productoId), v.pedidoProductoId)
+  }
+
+  // Configuraciones opcionales por producto incluido (productos: [{productoId,
+  // nota, modificadores}]). Se ignoran productos que no pertenezcan al combo.
+  const configPorProducto = new Map()
+  if (Array.isArray(item.productos)) {
+    for (const cfg of item.productos) {
+      if (cfg?.productoId != null) configPorProducto.set(Number(cfg.productoId), cfg)
+    }
   }
 
   const detalleProductos = []
@@ -123,12 +147,52 @@ async function procesarCombo(tx, item, opciones = {}) {
       throw new HttpError(400, `El producto "${p.nombre}" del combo no está disponible hoy`)
     }
     const filaCantidad = cantidad * cp.cantidad
+
+    const cfg = configPorProducto.get(p.id) ?? {}
+    const modificadoresDetallados = []
+    if (Array.isArray(cfg.modificadores) && cfg.modificadores.length > 0) {
+      if (p.tipo !== 'Con_receta') {
+        throw new HttpError(
+          400,
+          `El producto "${p.nombre}" del combo es de reventa directa y no admite modificadores`
+        )
+      }
+      const permitidos = new Set(p.productoModificadores.map((pm) => pm.modificadorId))
+      for (const md of cfg.modificadores) {
+        const id = Number(md.modificadorId)
+        const mod = await tx.modificador.findUnique({ where: { id } })
+        if (!mod) throw new HttpError(404, `El modificador ${id} no existe`)
+        if (mod.estado === 'Inactivo') {
+          throw new HttpError(400, `El modificador "${mod.nombre}" está inactivo`)
+        }
+        if (!permitidos.has(mod.id)) {
+          throw new HttpError(
+            400,
+            `El modificador "${mod.nombre}" no está asociado al producto "${p.nombre}"`
+          )
+        }
+        if (md.costoAplicado !== undefined) mod.costoAplicado = md.costoAplicado
+        modificadoresDetallados.push(mod)
+      }
+    }
+
     const consumos = []
     if (p.tipo === 'Reventa_directa') {
+      if (modificadoresDetallados.length > 0) {
+        throw new HttpError(
+          400,
+          `El producto "${p.nombre}" del combo es de reventa directa y no admite modificadores`
+        )
+      }
       consumos.push({ tipo: 'producto', id: p.id, cantidad: filaCantidad })
     } else {
-      for (const pi of p.productoIngredientes) {
-        consumos.push({ tipo: 'ingrediente', id: pi.ingredienteId, cantidad: pi.cantidad * filaCantidad })
+      const basePorUnidad = p.productoIngredientes.map((pi) => ({
+        ingredienteId: pi.ingredienteId,
+        cantidad: pi.cantidad,
+      }))
+      const { base } = aplicarModificadores(basePorUnidad, modificadoresDetallados)
+      for (const x of base) {
+        consumos.push({ tipo: 'ingrediente', id: x.ingredienteId, cantidad: x.cantidad * filaCantidad })
       }
     }
     // "Precio real" = suma de precios normales de los productos del combo
@@ -139,6 +203,11 @@ async function procesarCombo(tx, item, opciones = {}) {
       cantidad: filaCantidad,
       precioCongelado: p.precio,
       consumos,
+      modificadores: modificadoresDetallados.map((m) => ({
+        modificadorId: m.id,
+        costoAplicado: m.costoAplicado ?? m.costoAdicional,
+      })),
+      nota: typeof cfg.nota === 'string' ? cfg.nota.trim() : '',
       pedidoProductoId: vinculos.get(p.id) ?? null,
     })
   }
@@ -148,6 +217,7 @@ async function procesarCombo(tx, item, opciones = {}) {
     comboId: combo.id,
     cantidad,
     comboPrecioCongelado,
+    nota: notaCombo,
     precioReal,
     detalleProductos,
   }
@@ -182,6 +252,7 @@ export async function procesarItem(tx, item, opciones = {}) {
   validarCantidad(cantidad)
 
   const esMitad = item.esMitadYMitad === true
+  const nota = typeof item.nota === 'string' ? item.nota.trim() : ''
 
   const precioCongelado = item.precioCongelado ?? producto.precio
 
@@ -224,6 +295,7 @@ export async function procesarItem(tx, item, opciones = {}) {
         precioCongelado,
         esMitadYMitad: false,
         modificadores: [],
+        nota,
         pedidoProductoId: item.pedidoProductoId ?? null,
       },
       consumos,
@@ -292,6 +364,7 @@ export async function procesarItem(tx, item, opciones = {}) {
         sabor1ProductoId: sabor1.id,
         sabor2ProductoId: sabor2.id,
         modificadores: registros,
+        nota,
         pedidoProductoId: item.pedidoProductoId ?? null,
       },
       consumos,
@@ -310,6 +383,7 @@ export async function procesarItem(tx, item, opciones = {}) {
       precioCongelado,
       esMitadYMitad: false,
       modificadores: registros,
+      nota,
       pedidoProductoId: item.pedidoProductoId ?? null,
     },
     consumos,
@@ -390,6 +464,7 @@ export async function ejecutarVenta(tx, {
         esMitadYMitad: row.data.esMitadYMitad,
         comboId: row.comboId,
         comboPrecioCongelado: row.comboPrecioCongelado,
+        nota: row.data.nota ?? null,
       },
     })
 
@@ -502,10 +577,11 @@ async function prepararVenta(tx, { productos, usarDisponible, validarStock = tru
             cantidad: dp.cantidad,
             precioCongelado: dp.precioCongelado,
             esMitadYMitad: false,
+            nota: dp.nota || null,
           },
           comboId: it.comboId,
           comboPrecioCongelado: it.comboPrecioCongelado,
-          modificadores: [],
+          modificadores: dp.modificadores || [],
           consumos: agruparConsumos(dp.consumos),
           pedidoProductoId: dp.pedidoProductoId ?? null,
         })
@@ -519,6 +595,7 @@ async function prepararVenta(tx, { productos, usarDisponible, validarStock = tru
           cantidad: it.detalle.cantidad,
           precioCongelado: it.detalle.precioCongelado,
           esMitadYMitad: it.detalle.esMitadYMitad,
+          nota: it.detalle.nota || null,
           ...(it.detalle.esMitadYMitad
             ? {
                 sabor1ProductoId: it.detalle.sabor1ProductoId,
@@ -725,6 +802,7 @@ export async function crearVentaPedido(tx, {
         esMitadYMitad: row.data.esMitadYMitad,
         comboId: row.comboId,
         comboPrecioCongelado: row.comboPrecioCongelado,
+        nota: row.data.nota ?? null,
       },
     })
 

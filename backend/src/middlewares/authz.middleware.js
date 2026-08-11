@@ -47,10 +47,25 @@ export const repartidorSoloSusPedidos = (req, _res, next) => {
   next()
 }
 
-// Repartidor solo puede marcar Entregado un pedido asignado a él.
+// Repartidor solo puede marcar Entregado un pedido asignado a él. El
+// Administrador, por contraste, NO puede marcar Enviado en un A_domicilio ya
+// asignado a un repartidor (docs/07): ese tramo del flujo es del repartidor.
 export const repartidorSoloEntregado = async (req, _res, next) => {
   try {
-    if (req.usuario?.tipo === 'Administrador') return next()
+    if (req.usuario?.tipo === 'Administrador') {
+      if (req.body?.estadoPreparacion === 'Enviado') {
+        const pedido = await prisma.pedido.findUnique({ where: { id: Number(req.params.id) } })
+        if (pedido?.tipo === 'A_domicilio' && pedido.repartidorId != null) {
+          return next(
+            new HttpError(
+              403,
+              'El pedido está asignado a un repartidor; el repartidor es quien gestiona la entrega'
+            )
+          )
+        }
+      }
+      return next()
+    }
     if (req.body?.estadoPreparacion !== 'Entregado') {
       return next(new HttpError(403, 'El Repartidor solo puede marcar pedidos como Entregado'))
     }
@@ -70,18 +85,29 @@ export const repartidorSoloEntregado = async (req, _res, next) => {
 
 // Repartidor puede cobrar (pasar estado_pago a Pagado) SOLO un pedido que le
 // esté asignado y que sea A_domicilio: él es quien recibe el dinero en la
-// entrega (docs/07). El Administrador lo puede hacer en cualquier pedido sin
-// restricción (ej. Para_recoger, que no tiene repartidor).
+// entrega (docs/07). El Administrador lo puede hacer en cualquier pedido SIN
+// repartidor asignado (ej. Para_recoger), pero quedan bloqueados los
+// A_domicilio ya asignados: el cobro de esos pedidos lo hace el repartidor.
 export const repartidorSoloEstadoPago = async (req, _res, next) => {
   try {
-    if (req.usuario?.tipo === 'Administrador') return next()
-    const empleadoId = req.usuario.empleado?.id
-    if (empleadoId == null) {
-      return next(new HttpError(403, 'El Repartidor no tiene un perfil de repartidor vinculado'))
-    }
     const pedido = await prisma.pedido.findUnique({ where: { id: Number(req.params.id) } })
     if (!pedido) {
       return next(new HttpError(404, 'Pedido no encontrado'))
+    }
+    if (req.usuario?.tipo === 'Administrador') {
+      if (pedido.tipo === 'A_domicilio' && pedido.repartidorId != null) {
+        return next(
+          new HttpError(
+            403,
+            'El pedido está asignado a un repartidor; el repartidor es quien cobra en la entrega'
+          )
+        )
+      }
+      return next()
+    }
+    const empleadoId = req.usuario.empleado?.id
+    if (empleadoId == null) {
+      return next(new HttpError(403, 'El Repartidor no tiene un perfil de repartidor vinculado'))
     }
     if (pedido.tipo !== 'A_domicilio') {
       return next(new HttpError(403, 'Un Repartidor solo puede cobrar pedidos A_domicilio'))

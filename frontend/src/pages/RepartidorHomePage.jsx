@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from 'react'
 import Button from '../components/ui/Button'
+import BannerToaster from '../components/ui/BannerToaster'
 import { useAuth } from '../context/useAuth'
 import {
   cambiarEstadoPago,
@@ -91,7 +92,6 @@ function TarjetaPedido({ pedido, onMarcarEntregar, onCobrar, ocupado }) {
     pedido.estadoPreparacion === 'Entregado' &&
     pedido.estadoPago === 'Pendiente_pago' &&
     !pedido.noCobrar
-  const [noCobrar, setNoCobrar] = useState(false)
 
   return (
     <article className="rounded-3xl bg-card p-5 shadow-card">
@@ -107,12 +107,18 @@ function TarjetaPedido({ pedido, onMarcarEntregar, onCobrar, ocupado }) {
             <span className={`h-1.5 w-1.5 rounded-full ${estado.punto}`} />
             {estado.etiqueta}
           </span>
-          <span
-            className={`inline-flex shrink-0 items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-semibold ${pago.fondo} ${pago.texto}`}
-          >
-            <span className={`h-1.5 w-1.5 rounded-full ${pago.punto}`} />
-            {pago.etiqueta}
-          </span>
+          {pedido.noCobrar ? (
+            <span className="inline-flex shrink-0 items-center gap-1.5 rounded-full bg-amber-500/15 px-2.5 py-1 text-xs font-semibold text-amber-700">
+              Cortesía · No pagar
+            </span>
+          ) : (
+            <span
+              className={`inline-flex shrink-0 items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-semibold ${pago.fondo} ${pago.texto}`}
+            >
+              <span className={`h-1.5 w-1.5 rounded-full ${pago.punto}`} />
+              {pago.etiqueta}
+            </span>
+          )}
         </div>
       </div>
 
@@ -148,31 +154,17 @@ function TarjetaPedido({ pedido, onMarcarEntregar, onCobrar, ocupado }) {
             </span>
           </div>
         )}
-        {pedido.noCobrar && (
-          <p className="text-sm font-semibold text-danger">No cobrar</p>
-        )}
       </div>
 
       {puedeEntregar && (
-        <div className="mt-4 space-y-3">
-          <label className="flex items-center gap-2 text-sm font-medium text-ink">
-            <input
-              type="checkbox"
-              checked={noCobrar}
-              onChange={(e) => setNoCobrar(e.target.checked)}
-              className="h-5 w-5 accent-accent"
-            />
-            Marcar como "No cobrar"
-          </label>
-          <Button
-            size="lg"
-            className="w-full"
-            disabled={ocupado}
-            onClick={() => onMarcarEntregar(pedido.id, noCobrar)}
-          >
-            {ocupado ? 'Marcando…' : 'Marcar Entregado'}
-          </Button>
-        </div>
+        <Button
+          size="lg"
+          className="mt-4 w-full"
+          disabled={ocupado}
+          onClick={() => onMarcarEntregar(pedido.id)}
+        >
+          {ocupado ? 'Marcando…' : 'Marcar Entregado'}
+        </Button>
       )}
 
       {puedeCobrarPendiente && (
@@ -214,25 +206,30 @@ function RepartidorHomePage() {
     cargar()
   }, [cargar])
 
-  const marcarEntregado = async (id, noCobrar) => {
+  const marcarEntregado = async (id) => {
     setError('')
     setMensaje('')
     setOcupadoId(id)
-    // Flujo unificado de entrega + pago (docs/07): al entregar un pedido
-    // Pendiente_pago y SIN "No cobrar", el repartidor también cobra en el
-    // mismo acto (una sola acción cubre entregar y cobrar; ya no depende del
-    // Administrador para el segundo paso).
-    const pendienteDePago = (pedidos || []).some(
-      (p) => p.id === id && p.estadoPago === 'Pendiente_pago',
-    )
+    // Flujo unificado de entrega + pago (docs/07): un pedido "Cortesía" (con
+    // no_cobrar del pedido) genera su Venta al entregarlo; uno Pendiente_pago
+    // sin no_cobrar también se cobra en el mismo acto (una sola acción cubre
+    // entregar y cobrar; ya no depende del Administrador para el segundo paso).
+    // El repartidor ya NO marca "No cobrar" con un checkbox: ese estado solo
+    // lo decide el Administrador al crear el pedido.
+    const actual = (pedidos || []).find((p) => p.id === id)
+    const esCortesia = actual?.noCobrar === true
+    const pendienteDePago = actual?.estadoPago === 'Pendiente_pago'
     try {
-      await cambiarEstadoPreparacion(id, { estadoPreparacion: 'Entregado', noCobrar })
+      await cambiarEstadoPreparacion(id, {
+        estadoPreparacion: 'Entregado',
+        ...(esCortesia ? { noCobrar: true } : {}),
+      })
       setMensaje(
-        noCobrar
-          ? 'Pedido entregado y marcado como "No cobrar".'
+        esCortesia
+          ? 'Pedido entregado como cortesía (sin cobro). Venta registrada.'
           : 'Pedido marcado como Entregado.',
       )
-      if (!noCobrar && pendienteDePago) {
+      if (!esCortesia && pendienteDePago) {
         try {
           await cambiarEstadoPago(id, { estadoPago: 'Pagado' })
           setMensaje('Pedido entregado y cobrado. Venta generada.')
@@ -332,6 +329,8 @@ function RepartidorHomePage() {
             )}
           </div>
         )}
+
+        <BannerToaster error={error} notificacion={mensaje} onCerrarError={() => setError('')} />
 
         {pedidos === null ? (
           <div className="flex flex-col items-center justify-center gap-3 py-24 text-muted">

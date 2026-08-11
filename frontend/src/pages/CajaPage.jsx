@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import Button from '../components/ui/Button'
 import ModalHoja from '../components/ui/ModalHoja'
+import BannerToaster from '../components/ui/BannerToaster'
 import {
   abrirCaja,
   cerrarCaja,
@@ -643,6 +644,7 @@ function CajaPage({ pestanaInicial = 'caja' }) {
       </header>
 
       <div className="mx-auto max-w-5xl space-y-6 px-4 pt-6 sm:px-6 lg:px-8">
+        <BannerToaster error={errorLista} notificacion={notificacion} onCerrarError={() => setErrorLista('')} />
         {errorLista && (
           <div className="rounded-2xl bg-danger/10 px-4 py-3 text-sm font-medium text-danger">
             {errorLista}
