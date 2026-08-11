@@ -9,6 +9,7 @@ async function construirError(respuesta, mensajePorDefecto) {
     // respuesta sin cuerpo JSON: se conserva el mensaje por defecto
   }
   const e = new Error(datos?.message || mensajePorDefecto)
+  e.status = respuesta.status
   if (datos?.stockInsuficiente) e.stockInsuficiente = datos.stockInsuficiente
   if (datos?.opcionesPrecio) e.opcionesPrecio = datos.opcionesPrecio
   if (datos?.nuevoTotal != null) e.nuevoTotal = datos.nuevoTotal

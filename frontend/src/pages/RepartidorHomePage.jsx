@@ -234,7 +234,14 @@ function RepartidorHomePage() {
           await cambiarEstadoPago(id, { estadoPago: 'Pagado' })
           setMensaje('Pedido entregado y cobrado. Venta generada.')
         } catch (err) {
-          setError(err.message)
+          setMensaje('')
+          if (err.status === 409 && /caja abierta/i.test(err.message || '')) {
+            setError(
+              "No se pudo cobrar: no hay caja abierta. Pide al Administrador que la abra, luego usa el botón 'Cobrar' en este pedido.",
+            )
+          } else {
+            setError(err.message)
+          }
         }
       }
       await cargar()
@@ -255,7 +262,13 @@ function RepartidorHomePage() {
       setMensaje('Pedido cobrado. Venta generada.')
       await cargar()
     } catch (err) {
-      setError(err.message)
+      if (err.status === 409 && /caja abierta/i.test(err.message || '')) {
+        setError(
+          "No se pudo cobrar: no hay caja abierta. Pide al Administrador que la abra e inténtalo de nuevo.",
+        )
+      } else {
+        setError(err.message)
+      }
       await cargar()
     } finally {
       setOcupadoId(null)

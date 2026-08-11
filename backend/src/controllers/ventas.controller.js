@@ -1019,14 +1019,38 @@ export const reporteNoCobrar = asyncHandler(async (_req, res) => {
       },
       diaOperativoId: v.diaOperativoId,
       pedidoId: v.pedidoId,
-      productos: v.productos.map((vp) => ({
-        producto: vp.producto?.nombre ?? (vp.combo ? `Combo: ${vp.combo.nombre}` : null),
-        costo: vp.precioCongelado,
-        cantidad: vp.cantidad,
-      })),
+      productos: agruparProductosNoCobrar(v.productos),
     }))
   )
 })
+
+// Agrupa los Venta_Producto de un reporte "No cobrar": cada combo se expande
+// en una fila por producto incluido (con precio normal), así que se colapsa
+// por comboId mostrando el nombre del combo y su precio cerrado, igual que el
+// reporte de Ventas (ReportesPage). Los productos normales se listan con su
+// costo congelado.
+function agruparProductosNoCobrar(productos) {
+  const combos = new Map()
+  const normales = []
+  for (const vp of productos) {
+    if (vp.comboId != null) {
+      if (!combos.has(vp.comboId)) {
+        combos.set(vp.comboId, {
+          producto: vp.combo ? `Combo: ${vp.combo.nombre}` : 'Combo',
+          costo: vp.comboPrecioCongelado ?? vp.precioCongelado,
+          cantidad: vp.cantidad,
+        })
+      }
+    } else {
+      normales.push({
+        producto: vp.producto?.nombre ?? null,
+        costo: vp.precioCongelado,
+        cantidad: vp.cantidad,
+      })
+    }
+  }
+  return [...combos.values(), ...normales]
+}
 
 export const crearVenta = asyncHandler(async (req, res) => {
   // Toda Venta se asocia SIEMPRE al Dia_Operativo en estado Abierto

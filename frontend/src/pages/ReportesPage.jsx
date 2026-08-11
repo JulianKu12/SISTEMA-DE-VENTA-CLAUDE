@@ -120,18 +120,40 @@ function InsigniaMetodo({ metodo, noCobrar }) {
 
 function ResumenProductos({ productos }) {
   const resumen = useMemo(() => {
-    const conteo = new Map()
+    const porCombo = new Map()
+    const porNombre = new Map()
     for (const p of productos || []) {
-      const nombre = p.producto?.nombre || (p.combo ? `Combo: ${p.combo.nombre}` : 'Producto')
-      conteo.set(nombre, (conteo.get(nombre) || 0) + (p.cantidad || 1))
+      if (p.comboId != null) {
+        if (!porCombo.has(p.comboId)) {
+          porCombo.set(p.comboId, {
+            cantidad: p.cantidad || 1,
+            nombre: p.combo ? `Combo: ${p.combo.nombre}` : 'Combo',
+            precio: p.comboPrecioCongelado,
+          })
+        }
+      } else {
+        const nombre = p.producto?.nombre || 'Producto'
+        porNombre.set(nombre, (porNombre.get(nombre) || 0) + (p.cantidad || 1))
+      }
     }
-    return [...conteo.entries()].map(([nombre, cantidad]) => ({ nombre, cantidad }))
+    const combos = [...porCombo.values()].map((c) => ({
+      ...c,
+      precio: c.precio != null ? formatearMonto(c.precio) : null,
+    }))
+    const normales = [...porNombre.entries()].map(([nombre, cantidad]) => ({
+      nombre,
+      cantidad,
+      precio: null,
+    }))
+    return [...combos, ...normales]
   }, [productos])
 
   if (resumen.length === 0) return <span className="text-xs text-muted">Sin productos</span>
   return (
     <span className="truncate text-xs text-muted">
-      {resumen.map((r) => `${r.cantidad}× ${r.nombre}`).join(', ')}
+      {resumen
+        .map((r) => `${r.cantidad}× ${r.nombre}${r.precio ? ` (${r.precio})` : ''}`)
+        .join(', ')}
     </span>
   )
 }
@@ -151,6 +173,12 @@ function FilaVenta({ venta }) {
             )}
           </div>
           <p className="mt-0.5 text-xs text-muted">{formatearFecha(venta.fechaHora)}</p>
+          {venta.pedidoId && (
+            <p className="mt-0.5 text-xs text-muted">
+              Pedido{' '}
+              <span className="font-semibold text-ink">#{venta.pedidoId}</span>
+            </p>
+          )}
           <div className="mt-1">
             <ResumenProductos productos={venta.productos} />
           </div>
