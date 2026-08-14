@@ -143,11 +143,13 @@ export const reactivar = asyncHandler(async (req, res) => {
   if (combo.estado === 'Activo') throw new HttpError(400, 'El combo ya está activo')
 
   if (combo.estado === 'Suspendido') {
-    const tieneProductosNoDisponibles = combo.productos.some((cp) => !cp.producto.disponibleHoy)
+    const tieneProductosNoDisponibles = combo.productos.some(
+      (cp) => cp.producto.estado !== 'Activo' || !cp.producto.disponibleHoy,
+    )
     if (tieneProductosNoDisponibles) {
       throw new HttpError(
         409,
-        'No se puede reactivar: el combo está suspendido porque alguno de sus productos no está disponible hoy. Reactiva primero los productos.'
+        'No se puede reactivar: el combo está suspendido porque alguno de sus productos está inactivo o no disponible hoy. Reactiva primero los productos.'
       )
     }
   }

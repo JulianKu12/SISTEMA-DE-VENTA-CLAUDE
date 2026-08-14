@@ -202,26 +202,37 @@ export const actualizarDisponibilidad = asyncHandler(async (req, res) => {
   const producto = await prisma.producto.findUnique({ where: { id: Number(id) } })
   if (!producto) throw new HttpError(404, 'Producto no encontrado')
 
-  const actualizado = await prisma.producto.update({ where: { id: producto.id }, data: { disponibleHoy } })
-
   let aviso = null
-  if (!disponibleHoy) {
-    const combos = await prisma.combo_Producto.findMany({
-      where: { productoId: producto.id, combo: { estado: 'Activo' } },
-      include: { combo: { select: { id: true, nombre: true } } },
-    })
-    const combosActivos = combos.map((c) => c.combo)
-    if (combosActivos.length) {
-      await prisma.combo.updateMany({
-        where: { id: { in: combosActivos.map((c) => c.id) } },
-        data: { estado: 'Suspendido' },
+  const actualizado = await prisma.$transaction(async (tx) => {
+    const upd = await tx.producto.update({ where: { id: producto.id }, data: { disponibleHoy } })
+
+    if (!disponibleHoy) {
+      const combos = await tx.combo_Producto.findMany({
+        where: { productoId: producto.id, combo: { estado: 'Activo' } },
+        include: { combo: { select: { id: true, nombre: true } } },
       })
-      aviso = {
-        mensaje: 'El producto se marcó como no disponible hoy. Se suspendieron los combos activos que lo incluyen.',
-        combosSuspendidos: combosActivos,
+      const combosActivos = combos.map((c) => c.combo)
+      if (combosActivos.length) {
+        await tx.combo.updateMany({
+          where: { id: { in: combosActivos.map((c) => c.id) } },
+          data: { estado: 'Suspendido' },
+        })
+        aviso = {
+          mensaje: 'El producto se marcó como no disponible hoy. Se suspendieron los combos activos que lo incluyen.',
+          combosSuspendidos: combosActivos,
+        }
+      }
+    } else {
+      const combosReactivados = await reactivarCombosDeProducto(tx, producto.id)
+      if (combosReactivados.length) {
+        aviso = {
+          mensaje: 'El producto volvió a estar disponible. Se reactivaron los combos que ya no tienen causas de suspensión.',
+          combosReactivados,
+        }
       }
     }
-  }
+    return upd
+  })
 
   res.json({ producto: actualizado, ...(aviso ? { aviso } : {}) })
 })
@@ -260,17 +271,68 @@ export const desactivar = asyncHandler(async (req, res) => {
   })
 })
 
+// Tras hacer que un producto vuelva a estar disponible (estado Activo y/o
+// disponible_hoy=true), reactiva automáticamente los combos que estaban
+// Suspendidos por culpa de él, PERO solo si ya no queda NINGUNA causa de
+// suspensión: ningún producto del combo quedó inactivo (`estado !== 'Activo'`)
+// ni no disponible hoy (`disponibleHoy === false`).
+// Devuelve la lista de combos reactivados ({ id, nombre }).
+async function reactivarCombosDeProducto(tx, productoId) {
+  const combos = await tx.combo_Producto.findMany({
+    where: { productoId, combo: { estado: 'Suspendido' } },
+    select: {
+      combo: {
+        select: {
+          id: true,
+          nombre: true,
+          productos: {
+            include: { producto: { select: { estado: true, disponibleHoy: true } } },
+          },
+        },
+      },
+    },
+  })
+  const reactivados = []
+  for (const c of combos) {
+    const conCausas = c.combo.productos.some(
+      (cp) => cp.producto.estado !== 'Activo' || !cp.producto.disponibleHoy,
+    )
+    if (!conCausas) {
+      await tx.combo.update({ where: { id: c.combo.id }, data: { estado: 'Activo' } })
+      reactivados.push({ id: c.combo.id, nombre: c.combo.nombre })
+    }
+  }
+  return reactivados
+}
+
 export const reactivar = asyncHandler(async (req, res) => {
   const { id } = req.params
   const producto = await prisma.producto.findUnique({ where: { id: Number(id) } })
   if (!producto) throw new HttpError(404, 'Producto no encontrado')
   if (producto.estado === 'Activo') throw new HttpError(400, 'El producto ya está activo')
 
-  const actualizado = await prisma.producto.update({
-    where: { id: producto.id },
-    data: { estado: 'Activo' },
+  const resultado = await prisma.$transaction(async (tx) => {
+    const actualizado = await tx.producto.update({
+      where: { id: producto.id },
+      data: { estado: 'Activo' },
+    })
+    const combosReactivados = await reactivarCombosDeProducto(tx, producto.id)
+    return { actualizado, combosReactivados }
   })
-  res.json({ mensaje: 'Producto reactivado', producto: actualizado })
+
+  res.json({
+    mensaje: 'Producto reactivado',
+    producto: resultado.actualizado,
+    ...(resultado.combosReactivados.length
+      ? {
+          aviso: {
+            mensaje:
+              'El producto volvió a estar activo. Se reactivaron los combos que ya no tienen causas de suspensión.',
+            combosReactivados: resultado.combosReactivados,
+          },
+        }
+      : {}),
+  })
 })
 
 export const eliminar = asyncHandler(async (req, res) => {

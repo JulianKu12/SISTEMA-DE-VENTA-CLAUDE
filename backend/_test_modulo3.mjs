@@ -191,17 +191,14 @@ try {
   const estadoC3 = await prisma.combo.findUnique({ where: { id: c3.data.id } })
   ok(estadoC3.estado === 'Suspendido', 'combo en BD quedó Suspendido')
   const disSi = await req('PATCH', `/api/productos/${p5.data.id}/disponibilidad`, { disponibleHoy: true })
-  ok(disSi.status === 200 && !disSi.data.aviso, 'volver a disponible_hoy=true sin aviso')
-
-  console.log('== Reactivar combo Suspendido (Bug 5) ==')
-  // Tras volver disponible el producto, el combo sigue Suspendido hasta
-  // reactivarse explícitamente (docs/03: suspensión automática, reactivación manual).
+  ok(
+    disSi.status === 200 && disSi.data.aviso && disSi.data.aviso.combosReactivados.some((c) => c.id === c3.data.id),
+    'volver a disponible_hoy=true reactiva el combo con aviso',
+  )
   const estadoC3b = await prisma.combo.findUnique({ where: { id: c3.data.id } })
-  ok(estadoC3b.estado === 'Suspendido', 'combo permanece Suspendido tras volver disponible su producto')
+  ok(estadoC3b.estado === 'Activo', 'combo se reactiva AUTOMÁTICAMENTE al volver disponible su producto')
   const reactC3 = await req('PATCH', `/api/combos/${c3.data.id}/reactivar`, {})
-  ok(reactC3.status === 200 && reactC3.data.combo.estado === 'Activo', 'reactivar combo Suspendido -> Activo')
-  const reactC3DeNuevo = await req('PATCH', `/api/combos/${c3.data.id}/reactivar`, {})
-  ok(reactC3DeNuevo.status === 400, 'reactivar combo ya Activo -> 400')
+  ok(reactC3.status === 400, 'reactivar combo ya Activo -> 400')
   // Con producto aún no disponible, reactivar debe rechazar (409).
   const disNo2 = await req('PATCH', `/api/productos/${p5.data.id}/disponibilidad`, { disponibleHoy: false })
   const reactC3Bloqueado = await req('PATCH', `/api/combos/${c3.data.id}/reactivar`, {})

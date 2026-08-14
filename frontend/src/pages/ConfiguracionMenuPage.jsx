@@ -1249,7 +1249,13 @@ function ConfiguracionMenuPage() {
         (ps || []).map((p) => (p.id === prod.id ? { ...p, disponibleHoy: res.producto.disponibleHoy } : p)),
       )
       if (res.aviso) {
-        setAvisoCombos({ titulo: 'Combos suspendidos', mensaje: res.aviso.mensaje, combos: res.aviso.combosSuspendidos })
+        const reactivados = res.aviso.combosReactivados || []
+        const suspendidos = res.aviso.combosSuspendidos || []
+        setAvisoCombos({
+          titulo: reactivados.length ? 'Combos reactivados' : 'Combos suspendidos',
+          mensaje: res.aviso.mensaje,
+          combos: reactivados.length ? reactivados : suspendidos,
+        })
         recargarCombos()
       }
     } catch (err) {
@@ -1300,6 +1306,14 @@ function ConfiguracionMenuPage() {
       const res = await reactivarProducto(prod.id)
       setNotificacion(res.mensaje || 'Producto reactivado')
       recargarProductos()
+      recargarCombos()
+      if (res.aviso) {
+        setAvisoCombos({
+          titulo: 'Combos reactivados',
+          mensaje: res.aviso.mensaje,
+          combos: res.aviso.combosReactivados,
+        })
+      }
     } catch (err) {
       setErrorLista(err.message)
     } finally {
