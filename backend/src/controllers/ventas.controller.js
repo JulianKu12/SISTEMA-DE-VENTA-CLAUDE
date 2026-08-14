@@ -66,8 +66,11 @@ function aplicarModificadores(basePorUnidad, modificadoresDetallados) {
       if (m.ingredienteSustitutoId == null) {
         throw new HttpError(400, `El modificador ${m.nombre} (Sustituir) requiere ingredienteSustitutoId`)
       }
+      if (m.cantidadSustituto == null || !(m.cantidadSustituto > 0)) {
+        throw new HttpError(400, `El modificador ${m.nombre} (Sustituir) requiere cantidadSustituto mayor a 0`)
+      }
       mapa.delete(m.ingredienteAfectadoId)
-      mapa.set(m.ingredienteSustitutoId, (mapa.get(m.ingredienteSustitutoId) || 0) + (basePorUnidad.find((b) => b.ingredienteId === m.ingredienteAfectadoId)?.cantidad || 0))
+      mapa.set(m.ingredienteSustitutoId, (mapa.get(m.ingredienteSustitutoId) || 0) + m.cantidadSustituto)
     }
     registros.push({ modificadorId: m.id, costoAplicado: m.costoAplicado ?? m.costoAdicional })
   }
@@ -978,6 +981,7 @@ export const obtenerVenta = asyncHandler(async (req, res) => {
           medioDevolucion: true,
           fechaHora: true,
           ventaProductoIds: true,
+          cantidadesVentaProducto: true,
         },
       },
     },

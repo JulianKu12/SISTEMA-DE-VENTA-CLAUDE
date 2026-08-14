@@ -132,7 +132,8 @@ function ResumenProductos({ productos }) {
           })
         }
       } else {
-        const nombre = p.producto?.nombre || 'Producto'
+        const nombre =
+          typeof p.producto === 'string' ? p.producto : p.producto?.nombre || 'Producto'
         porNombre.set(nombre, (porNombre.get(nombre) || 0) + (p.cantidad || 1))
       }
     }
@@ -164,7 +165,9 @@ function FilaVenta({ venta }) {
       <div className="flex flex-wrap items-center justify-between gap-2">
         <div className="min-w-0">
           <div className="flex flex-wrap items-center gap-2">
-            <p className="text-sm font-bold text-ink">Venta #{venta.id}</p>
+            <p className="text-sm font-bold text-ink">
+              {venta.pedidoId ? `Pedido #${venta.pedidoId}` : 'Venta directa'}
+            </p>
             <InsigniaMetodo metodo={venta.metodoPago} noCobrar={venta.noCobrar} />
             {venta.esVentaPreviaApertura && (
               <span className="inline-flex shrink-0 items-center rounded-full bg-muted/10 px-2.5 py-1 text-xs font-semibold text-muted">
@@ -173,12 +176,6 @@ function FilaVenta({ venta }) {
             )}
           </div>
           <p className="mt-0.5 text-xs text-muted">{formatearFecha(venta.fechaHora)}</p>
-          {venta.pedidoId && (
-            <p className="mt-0.5 text-xs text-muted">
-              Pedido{' '}
-              <span className="font-semibold text-ink">#{venta.pedidoId}</span>
-            </p>
-          )}
           <div className="mt-1">
             <ResumenProductos productos={venta.productos} />
           </div>

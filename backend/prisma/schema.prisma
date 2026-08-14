@@ -161,6 +161,8 @@ model Ingrediente {
   modificadoresAfectados  Modificador[]           @relation("ModificadorAfectado")
   modificadoresSustitutos Modificador[]           @relation("ModificadorSustituto")
   movimientosInventario   Movimiento_Inventario[] @relation("MovIngrediente")
+
+  @@unique([nombre])
 }
 
 model Producto {
@@ -183,6 +185,8 @@ model Producto {
   pedidosProductos        Pedido_Producto[]
   pedidosMitadesSabor1    Pedido_Producto_Mitad[]      @relation("PedidoMitadSabor1Producto")
   pedidosMitadesSabor2    Pedido_Producto_Mitad[]      @relation("PedidoMitadSabor2Producto")
+
+  @@unique([nombre])
 }
 
 model Producto_Ingrediente {
@@ -204,6 +208,7 @@ model Modificador {
   ingredienteAfectadoId  Int
   ingredienteSustitutoId Int?
   cantidadExtra          Float?
+  cantidadSustituto      Float?
   costoAdicional         Float           @default(0)
   estado                 Estado          @default(Activo)
 
@@ -376,6 +381,7 @@ model Devolucion {
   medioDevolucion    MedioDevolucion
   regresaAInventario Boolean          @default(false)
   ventaProductoIds   String?
+  cantidadesVentaProducto String?
   fechaHora          DateTime         @default(now())
   diaOperativoId     Int?
 

@@ -107,7 +107,15 @@ try {
   const delP2 = await req('DELETE', `/api/productos/${p2.data.id}`)
   ok(delP2.status === 204, 'elimina producto reventa nunca vendido')
 
-  console.log('== Desactivar ingrediente ==')
+  console.log('== Nombres únicos (case-insensitive) ==')
+  const dupIng = await req('POST', '/api/ingredientes', { nombre: 'HARINA', unidadMedida: 'kg', stockActual: 1, stockMinimoAlerta: 1 })
+  ok(dupIng.status === 400 && /Harina/.test(dupIng.data.message || ''), 'ingrediente duplicado -> 400')
+  const editDup = await req('PATCH', `/api/ingredientes/${i1.data.id}`, { nombre: 'pan' })
+  ok(editDup.status === 400, 'editar hacia un nombre existente -> 400')
+  const editSelf = await req('PATCH', `/api/ingredientes/${i1.data.id}`, { nombre: 'Harina' })
+  ok(editSelf.status === 200, 'conservar el mismo nombre al editar -> 200')
+
+  console.log('== Desactivar ingrediente (decisión por producto) ==')
   const p3 = await req('POST', '/api/productos', {
     nombre: 'Sandwich',
     precio: 18,
@@ -115,21 +123,118 @@ try {
     ingredientes: [{ ingredienteId: i2.data.id, cantidad: 1 }],
   })
   ok(p3.status === 201, 'crear producto para probar desactivación')
+  const dupProd = await req('POST', '/api/productos', { nombre: 'sandwich', precio: 5, tipo: 'Reventa_directa' })
+  ok(dupProd.status === 400, 'producto duplicado -> 400')
   const desSin = await req('PATCH', `/api/ingredientes/${i2.data.id}/desactivar`, {})
   ok(desSin.status === 409 && desSin.data.requiereConfirmacion === true && desSin.data.productosAfectados.some((p) => p.id === p3.data.id), 'desactivar pide confirmación y lista afectados')
-  const desCancela = await req('PATCH', `/api/ingredientes/${i2.data.id}/desactivar`, { opcion: 'cancelar' })
-  ok(desCancela.status === 200 && desCancela.data.ingrediente.estado === 'Activo', 'opcion cancelar no desactiva')
-  const desVende = await req('PATCH', `/api/ingredientes/${i2.data.id}/desactivar`, { opcion: 'vender_sin_el' })
-  ok(desVende.status === 200 && desVende.data.ingrediente?.estado === 'Inactivo', 'opcion vender_sin_el desactiva')
+  const desVacia = await req('PATCH', `/api/ingredientes/${i2.data.id}/desactivar`, { decisiones: [] })
+  ok(desVacia.status === 400, 'decisiones vacías -> 400')
+  const desFalta = await req('PATCH', `/api/ingredientes/${i2.data.id}/desactivar`, { decisiones: [{ productoId: 99999, accion: 'suspender' }] })
+  ok(desFalta.status === 400, 'faltan decisiones para algún producto afectado -> 400')
+  const desVende = await req('PATCH', `/api/ingredientes/${i2.data.id}/desactivar`, {
+    decisiones: [{ productoId: p3.data.id, accion: 'vender_sin_el' }],
+  })
+  ok(desVende.status === 200 && desVende.data.ingrediente?.estado === 'Inactivo', 'vender_sin_el desactiva el ingrediente')
   const recetaTras = await prisma.producto_Ingrediente.count({ where: { productoId: p3.data.id, ingredienteId: i2.data.id } })
-  ok(recetaTras === 0, 'ingrediente removido de la receta')
+  ok(recetaTras === 0, 'ingrediente removido de la receta al vender sin él')
+  const p3Disp = await prisma.producto.findUnique({ where: { id: p3.data.id } })
+  ok(p3Disp.disponibleHoy === true, 'producto vendido sin el ingrediente siguió disponible')
+
+  console.log('== Desactivar con suspensión por producto y combos ==')
+  const iSusp = await req('POST', '/api/ingredientes', { nombre: 'Queso', unidadMedida: 'pieza', stockActual: 20, stockMinimoAlerta: 2 })
+  ok(iSusp.status === 201, 'crear ingrediente para prueba de suspensión')
+  const pSusp = await req('POST', '/api/productos', {
+    nombre: 'Quesadilla',
+    precio: 30,
+    tipo: 'Con_receta',
+    ingredientes: [{ ingredienteId: iSusp.data.id, cantidad: 1 }],
+  })
+  ok(pSusp.status === 201, 'crear producto que se suspenderá')
+  const cSusp = await req('POST', '/api/combos', {
+    nombre: 'Combo Quesadilla',
+    precioEspecial: 25,
+    productos: [{ productoId: pSusp.data.id, cantidad: 1 }],
+  })
+  ok(cSusp.status === 201 && cSusp.data.estado === 'Activo', 'combo activo con producto disponible')
+  const desSuspende = await req('PATCH', `/api/ingredientes/${iSusp.data.id}/desactivar`, {
+    decisiones: [{ productoId: pSusp.data.id, accion: 'suspender' }],
+  })
+  ok(desSuspende.status === 200 && desSuspende.data.ingrediente?.estado === 'Inactivo', 'suspender desactiva el ingrediente')
+  ok(desSuspende.data.aviso && desSuspende.data.aviso.combosSuspendidos.some((c) => c.id === cSusp.data.id), 'suspende los combos afectados y avisa')
+  const pSuspEstado = await prisma.producto.findUnique({ where: { id: pSusp.data.id } })
+  ok(pSuspEstado.disponibleHoy === false, 'producto suspendido quedó no disponible hoy')
+  const recetaSusp = await prisma.producto_Ingrediente.count({ where: { productoId: pSusp.data.id, ingredienteId: iSusp.data.id } })
+  ok(recetaSusp === 1, 'la receta conserva el ingrediente al suspender el producto')
+
+  const iMix = await req('POST', '/api/ingredientes', { nombre: 'Mayonesa', unidadMedida: 'g', stockActual: 100, stockMinimoAlerta: 10 })
+  const pMix1 = await req('POST', '/api/productos', {
+    nombre: 'Baguette',
+    precio: 22,
+    tipo: 'Con_receta',
+    ingredientes: [{ ingredienteId: iMix.data.id, cantidad: 1 }],
+  })
+  const pMix2 = await req('POST', '/api/productos', {
+    nombre: 'Wrap',
+    precio: 24,
+    tipo: 'Con_receta',
+    ingredientes: [{ ingredienteId: iMix.data.id, cantidad: 1 }],
+  })
+  const desMixta = await req('PATCH', `/api/ingredientes/${iMix.data.id}/desactivar`, {
+    decisiones: [
+      { productoId: pMix1.data.id, accion: 'vender_sin_el' },
+      { productoId: pMix2.data.id, accion: 'suspender' },
+    ],
+  })
+  ok(desMixta.status === 200, 'decisiones distintas por producto en la misma acción')
+  const recetaMix = await prisma.producto_Ingrediente.count({ where: { productoId: pMix1.data.id, ingredienteId: iMix.data.id } })
+  const dispMix = await prisma.producto.findUnique({ where: { id: pMix2.data.id } })
+  ok(recetaMix === 0 && dispMix.disponibleHoy === false, 'mezcla de acciones respetada por producto')
+
+  console.log('== Bloquear disponibilidad/reactivación con ingrediente inactivo ==')
+  const pRecetaInact = await req('POST', '/api/productos', {
+    nombre: 'Panera',
+    precio: 20,
+    tipo: 'Con_receta',
+    ingredientes: [{ ingredienteId: i2.data.id, cantidad: 1 }],
+  })
+  ok(pRecetaInact.status === 201, 'crear producto con ingrediente inactivo en la receta')
+  const disOffInact = await req('PATCH', `/api/productos/${pRecetaInact.data.id}/disponibilidad`, { disponibleHoy: false })
+  ok(disOffInact.status === 200, 'disponible_hoy=false con ingrediente inactivo permitido')
+  const disOnInact = await req('PATCH', `/api/productos/${pRecetaInact.data.id}/disponibilidad`, { disponibleHoy: true })
+  ok(disOnInact.status === 409 && /Pan/.test(disOnInact.data.message || ''), 'disponible_hoy=true bloqueado si la receta tiene un ingrediente inactivo')
+  const pRecetaInactDisp = await prisma.producto.findUnique({ where: { id: pRecetaInact.data.id } })
+  ok(pRecetaInactDisp.disponibleHoy === false, 'el producto quedó no disponible tras el bloqueo')
+  const reactInactProd = await req('PATCH', `/api/productos/${pRecetaInact.data.id}/desactivar`, {})
+  ok(reactInactProd.status === 200, 'desactivar el producto con ingrediente inactivo permitido')
+  const reactInact = await req('PATCH', `/api/productos/${pRecetaInact.data.id}/reactivar`, {})
+  ok(reactInact.status === 409 && /Pan/.test(reactInact.data.message || ''), 'reactivar bloqueado con ingrediente inactivo')
+  const reactIng = await req('PATCH', `/api/ingredientes/${i2.data.id}/reactivar`, {})
+  ok(reactIng.status === 200, 'reactivar el ingrediente inactivo')
+  const reactOk = await req('PATCH', `/api/productos/${pRecetaInact.data.id}/reactivar`, {})
+  ok(reactOk.status === 200 && reactOk.data.producto.estado === 'Activo', 'reactivar el producto al completarse la receta')
+  const disOnOk = await req('PATCH', `/api/productos/${pRecetaInact.data.id}/disponibilidad`, { disponibleHoy: true })
+  ok(disOnOk.status === 200, 'disponible_hoy=true permitido con receta completa')
 
   console.log('== Modificador ==')
+  const pMod = await req('POST', '/api/productos', {
+    nombre: 'Tarta',
+    precio: 26,
+    tipo: 'Con_receta',
+    ingredientes: [{ ingredienteId: i1.data.id, cantidad: 1 }],
+  })
+  ok(pMod.status === 201, 'crear producto para probar modificadores')
+  const mBadProd = await req('POST', '/api/modificadores', {
+    nombre: 'Sin harina en sandwich',
+    tipo: 'Quitar',
+    ingredienteAfectadoId: i1.data.id,
+    productoIds: [p3.data.id],
+  })
+  ok(mBadProd.status === 400, 'rechaza asociar producto que no incluye el ingrediente afectado')
   const m1 = await req('POST', '/api/modificadores', {
     nombre: 'Sin harina',
     tipo: 'Quitar',
     ingredienteAfectadoId: i1.data.id,
-    productoIds: [p3.data.id],
+    productoIds: [pMod.data.id],
   })
   ok(m1.status === 201, 'crear modificador asociado a producto')
   const mBad = await req('POST', '/api/modificadores', { nombre: 'M', tipo: 'Sustituir', ingredienteAfectadoId: i1.data.id })
@@ -142,14 +247,57 @@ try {
     costoAdicional: 3,
   })
   ok(m2.status === 201, 'crear modificador sin asociación previa')
-  const asoc = await req('POST', `/api/productos/${p3.data.id}/modificadores`, { modificadorId: m2.data.id })
-  ok(asoc.status === 201, 'asociar modificador a producto')
-  const asocDup = await req('POST', `/api/productos/${p3.data.id}/modificadores`, { modificadorId: m2.data.id })
+  const asoc = await req('POST', `/api/productos/${pMod.data.id}/modificadores`, { modificadorId: m2.data.id })
+  ok(asoc.status === 201, 'asociar modificador a producto compatible')
+  const asocNoCompat = await req('POST', `/api/productos/${p3.data.id}/modificadores`, { modificadorId: m2.data.id })
+  ok(asocNoCompat.status === 400, 'no asocia modificador a producto sin el ingrediente afectado')
+  const asocDup = await req('POST', `/api/productos/${pMod.data.id}/modificadores`, { modificadorId: m2.data.id })
   ok(asocDup.status === 409, 'asociar duplicado -> 409')
-  const desasoc = await req('DELETE', `/api/productos/${p3.data.id}/modificadores/${m2.data.id}`)
+  const desasoc = await req('DELETE', `/api/productos/${pMod.data.id}/modificadores/${m2.data.id}`)
   ok(desasoc.status === 204, 'desasociar modificador')
   const listM = await req('GET', '/api/modificadores')
   ok(listM.status === 200 && listM.data.some((m) => m.id === m1.data.id), 'listar modificadores')
+
+  console.log('== Sustituir: cantidad del sustituto ==')
+  const mSubSinCant = await req('POST', '/api/modificadores', {
+    nombre: 'Sustituto sin cantidad',
+    tipo: 'Sustituir',
+    ingredienteAfectadoId: i1.data.id,
+    ingredienteSustitutoId: i2.data.id,
+  })
+  ok(mSubSinCant.status === 400, 'Sustituir sin cantidadSustituto -> 400')
+  ok(/cantidadSustituto/i.test(mSubSinCant.data?.message || ''), 'mensaje exige cantidadSustituto')
+
+  // Unidades DISTINTAS: valor en kg vs valor en pieza -> checkbox no disponible,
+  // por lo que la cantidad se indica manualmente y el backend la debe guardar.
+  const iKg = await req('POST', '/api/ingredientes', { nombre: 'Azúcar', unidadMedida: 'kg', stockActual: 5, stockMinimoAlerta: 1 })
+  const iPza = await req('POST', '/api/ingredientes', { nombre: 'Sobre azúcar', unidadMedida: 'pieza', stockActual: 50, stockMinimoAlerta: 5 })
+  ok(iKg.status === 201 && iPza.status === 201, 'crear ingredientes con unidades distintas (kg y pieza)')
+  ok(iKg.data.unidadMedida !== iPza.data.unidadMedida, 'unidades son distintas (kg vs pieza)')
+  const mSubDist = await req('POST', '/api/modificadores', {
+    nombre: 'Azúcar en polvo',
+    tipo: 'Sustituir',
+    ingredienteAfectadoId: iKg.data.id,
+    ingredienteSustitutoId: iPza.data.id,
+    cantidadSustituto: 2,
+  })
+  ok(mSubDist.status === 201 && mSubDist.data.cantidadSustituto === 2, 'Sustituir con unidades distintas creado con cantidad manual 2')
+  ok(mSubDist.data.ingredienteAfectado.unidadMedida !== mSubDist.data.ingredienteSustituto.unidadMedida, 'respuesta conserva unidades distintas del chequeo del checkbox')
+
+  // Unidades IGUALES: el checkbox "usar la misma cantidad" SÍ está disponible.
+  const iIgualA = await req('POST', '/api/ingredientes', { nombre: 'Miel', unidadMedida: 'g', stockActual: 1000, stockMinimoAlerta: 100 })
+  const iIgualB = await req('POST', '/api/ingredientes', { nombre: 'Azúcar glass', unidadMedida: 'g', stockActual: 1000, stockMinimoAlerta: 100 })
+  ok(iIgualA.status === 201 && iIgualB.status === 201, 'crear ingredientes con unidades iguales (g y g)')
+  ok(iIgualA.data.unidadMedida === iIgualB.data.unidadMedida, 'unidades son iguales (g == g)')
+  const mSubIgual = await req('POST', '/api/modificadores', {
+    nombre: 'Miel por azúcar glass',
+    tipo: 'Sustituir',
+    ingredienteAfectadoId: iIgualA.data.id,
+    ingredienteSustitutoId: iIgualB.data.id,
+    cantidadSustituto: 1.5,
+  })
+  ok(mSubIgual.status === 201 && mSubIgual.data.cantidadSustituto === 1.5, 'Sustituir con unidades iguales creado (checkbox disponible)')
+  ok(mSubIgual.data.ingredienteAfectado.unidadMedida === mSubIgual.data.ingredienteSustituto.unidadMedida, 'respuesta conserva unidades iguales del chequeo del checkbox')
 
   console.log('== Combo ==')
   const c1 = await req('POST', '/api/combos', {

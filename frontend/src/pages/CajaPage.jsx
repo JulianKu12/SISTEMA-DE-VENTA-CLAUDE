@@ -6,6 +6,7 @@ import BannerToaster from '../components/ui/BannerToaster'
 import {
   abrirCaja,
   cerrarCaja,
+  completarCorte,
   crearGasto,
   listarGastos,
   obtenerEstadoCaja,
@@ -357,6 +358,94 @@ function ModalFormularioCierre({ onCerrar, onGuardar }) {
   )
 }
 
+function ModalCompletarCorte({ corte, desglose, onCerrar, onGuardar }) {
+  const [efectivo, setEfectivo] = useState('')
+  const [error, setError] = useState('')
+  const [enviando, setEnviando] = useState(false)
+
+  const confirmar = async () => {
+    setError('')
+    if (efectivo === '' || Number.isNaN(Number(efectivo))) {
+      return setError('Indica el efectivo contado (número)')
+    }
+    setEnviando(true)
+    try {
+      await onGuardar(Number(efectivo))
+      onCerrar()
+    } catch (err) {
+      setError(err.message)
+    } finally {
+      setEnviando(false)
+    }
+  }
+
+  return (
+    <ModalHoja
+      abierto
+      titulo="Completar corte"
+      subtitulo={`Cuenta el efectivo del corte del ${formatearFecha(corte.fechaApertura)}.`}
+      onCerrar={onCerrar}
+    >
+      {error && (
+        <div className="rounded-2xl bg-danger/10 px-4 py-3 text-sm font-medium text-danger">
+          {error}
+        </div>
+      )}
+      <div className="space-y-2">
+        <FilaResumen etiqueta="Ventas del día" valor={String(desglose.totalVentas)} />
+        <FilaResumen etiqueta="Efectivo" valor={formatearMonto(desglose.ventasEfectivo)} tono="text-accent" />
+        <FilaResumen etiqueta="Tarjeta" valor={formatearMonto(desglose.ventasTarjeta)} />
+        <FilaResumen etiqueta="Transferencia" valor={formatearMonto(desglose.ventasTransferencia)} />
+        <FilaResumen etiqueta="Gastos en efectivo" valor={formatearMonto(desglose.gastosEfectivo)} />
+        <FilaResumen etiqueta="Gastos con tarjeta" valor={formatearMonto(desglose.gastosTarjeta)} />
+        <FilaResumen etiqueta="Gastos por transferencia" valor={formatearMonto(desglose.gastosTransferencia)} />
+        <FilaResumen etiqueta="Devoluciones en efectivo" valor={formatearMonto(desglose.devolucionesEfectivoCaja)} />
+        <FilaResumen etiqueta="Devoluciones (total)" valor={formatearMonto(desglose.devolucionesTotal)} />
+        <FilaResumen
+          etiqueta="Efectivo esperado"
+          valor={formatearMonto(desglose.esperado)}
+          tono="text-accent"
+        />
+      </div>
+      <div className="mt-5 space-y-1.5">
+        <label className="block text-sm font-semibold text-ink" htmlFor={`completar-efectivo-${corte.id}`}>
+          Efectivo contado
+        </label>
+        <input
+          id={`completar-efectivo-${corte.id}`}
+          className={CLASE_INPUT}
+          type="number"
+          min="0"
+          step="any"
+          inputMode="decimal"
+          value={efectivo}
+          onChange={(e) => setEfectivo(e.target.value)}
+          placeholder="0.00"
+          autoFocus
+        />
+      </div>
+      <div className="mt-6 flex gap-3">
+        <button
+          type="button"
+          onClick={onCerrar}
+          disabled={enviando}
+          className="inline-flex min-h-12 flex-1 select-none items-center justify-center gap-2 rounded-full bg-muted/10 px-5 py-3 text-base font-semibold text-ink transition duration-150 ease-out active:scale-[0.97] focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/40 disabled:opacity-50"
+        >
+          Cancelar
+        </button>
+        <button
+          type="button"
+          onClick={confirmar}
+          disabled={enviando}
+          className="inline-flex min-h-12 flex-1 select-none items-center justify-center gap-2 rounded-full bg-accent px-5 py-3 text-base font-semibold text-white shadow-[0_4px_14px_rgb(0_122_255/0.35)] transition duration-150 ease-out active:scale-[0.97] focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/40 disabled:opacity-50"
+        >
+          {enviando ? 'Guardando…' : 'Completar corte'}
+        </button>
+      </div>
+    </ModalHoja>
+  )
+}
+
 function ModalFormularioGasto({ onCerrar, onGuardar }) {
   const [concepto, setConcepto] = useState('')
   const [monto, setMonto] = useState('')
@@ -515,6 +604,7 @@ function CajaPage({ pestanaInicial = 'caja' }) {
   const [modalGasto, setModalGasto] = useState(false)
   const [resultadoCierre, setResultadoCierre] = useState(null)
   const [resumen, setResumen] = useState(null)
+  const [modalCompletar, setModalCompletar] = useState(null)
 
   const cargar = async () => {
     const [e, g, h] = await Promise.allSettled([
@@ -575,6 +665,46 @@ function CajaPage({ pestanaInicial = 'caja' }) {
     cargar()
   }
 
+  const armarResumen = (dia, ventas, todosGastos, todasDevoluciones) => {
+    const ventasNormales = (ventas || []).filter((v) => !v.noCobrar && !v.esVentaPreviaApertura)
+    const ventasEfectivo = ventasNormales
+      .filter((v) => v.metodoPago === 'Efectivo')
+      .reduce((a, v) => a + v.total, 0)
+    const ventasTarjeta = ventasNormales
+      .filter((v) => v.metodoPago === 'Tarjeta')
+      .reduce((a, v) => a + v.total, 0)
+    const ventasTransferencia = ventasNormales
+      .filter((v) => v.metodoPago === 'Transferencia')
+      .reduce((a, v) => a + v.total, 0)
+    const gastosDia = (todosGastos || []).filter((g) => g.diaOperativoId === dia.id)
+    const gastosEfectivo = gastosDia
+      .filter((g) => g.metodoPago === 'Efectivo')
+      .reduce((a, g) => a + g.monto, 0)
+    const gastosTarjeta = gastosDia
+      .filter((g) => g.metodoPago === 'Tarjeta')
+      .reduce((a, g) => a + g.monto, 0)
+    const gastosTransferencia = gastosDia
+      .filter((g) => g.metodoPago === 'Transferencia')
+      .reduce((a, g) => a + g.monto, 0)
+    const devolucionesDia = (todasDevoluciones || []).filter((d) => d.diaOperativoId === dia.id)
+    const devolucionesEfectivoCaja = devolucionesDia
+      .filter((d) => d.medioDevolucion === 'Efectivo_de_caja')
+      .reduce((a, d) => a + d.monto, 0)
+    const devolucionesTotal = devolucionesDia.reduce((a, d) => a + d.monto, 0)
+    return {
+      totalVentas: ventasNormales.length,
+      ventasEfectivo,
+      ventasTarjeta,
+      ventasTransferencia,
+      gastosEfectivo,
+      gastosTarjeta,
+      gastosTransferencia,
+      devolucionesEfectivoCaja,
+      devolucionesTotal,
+      esperado: dia.fondoInicial + ventasEfectivo - gastosEfectivo - devolucionesEfectivoCaja,
+    }
+  }
+
   const abrirResumen = async (dia) => {
     setErrorLista('')
     try {
@@ -583,46 +713,36 @@ function CajaPage({ pestanaInicial = 'caja' }) {
         listarGastos(),
         listarDevoluciones(),
       ])
-      const ventasNormales = (ventas || []).filter((v) => !v.noCobrar && !v.esVentaPreviaApertura)
-      const ventasEfectivo = ventas
-        .filter((v) => !v.noCobrar && !v.esVentaPreviaApertura && v.metodoPago === 'Efectivo')
-        .reduce((a, v) => a + v.total, 0)
-      const ventasTarjeta = ventas
-        .filter((v) => !v.noCobrar && !v.esVentaPreviaApertura && v.metodoPago === 'Tarjeta')
-        .reduce((a, v) => a + v.total, 0)
-      const ventasTransferencia = ventas
-        .filter((v) => !v.noCobrar && !v.esVentaPreviaApertura && v.metodoPago === 'Transferencia')
-        .reduce((a, v) => a + v.total, 0)
-      const gastosDia = (todosGastos || []).filter((g) => g.diaOperativoId === dia.id)
-      const gastosEfectivo = gastosDia
-        .filter((g) => g.metodoPago === 'Efectivo')
-        .reduce((a, g) => a + g.monto, 0)
-      const gastosTarjeta = gastosDia
-        .filter((g) => g.metodoPago === 'Tarjeta')
-        .reduce((a, g) => a + g.monto, 0)
-      const gastosTransferencia = gastosDia
-        .filter((g) => g.metodoPago === 'Transferencia')
-        .reduce((a, g) => a + g.monto, 0)
-      const devolucionesDia = (todasDevoluciones || []).filter((d) => d.diaOperativoId === dia.id)
-      const devolucionesEfectivoCaja = devolucionesDia
-        .filter((d) => d.medioDevolucion === 'Efectivo_de_caja')
-        .reduce((a, d) => a + d.monto, 0)
-      const devolucionesTotal = devolucionesDia.reduce((a, d) => a + d.monto, 0)
-      setResumen({
-        totalVentas: ventasNormales.length,
-        ventasEfectivo,
-        ventasTarjeta,
-        ventasTransferencia,
-        gastosEfectivo,
-        gastosTarjeta,
-        gastosTransferencia,
-        devolucionesEfectivoCaja,
-        devolucionesTotal,
-        esperado: dia.fondoInicial + ventasEfectivo - gastosEfectivo - devolucionesEfectivoCaja,
+      setResumen(armarResumen(dia, ventas, todosGastos, todasDevoluciones))
+    } catch (err) {
+      setErrorLista(err.message)
+    }
+  }
+
+  const abrirCompletar = async (corte) => {
+    setErrorLista('')
+    try {
+      const [ventas, todosGastos, todasDevoluciones] = await Promise.all([
+        obtenerVentas(corte.id),
+        listarGastos(),
+        listarDevoluciones(),
+      ])
+      setModalCompletar({
+        corte,
+        desglose: armarResumen(corte, ventas, todosGastos, todasDevoluciones),
       })
     } catch (err) {
       setErrorLista(err.message)
     }
+  }
+
+  const guardarCompletarCorte = async (efectivoContado) => {
+    const res = await completarCorte(modalCompletar.corte.id, efectivoContado)
+    setModalCompletar(null)
+    setResultadoCierre(res)
+    setResumen(null)
+    setNotificacion('Corte completado')
+    cargar()
   }
 
   const cargandoInicial = estado === null && !errorLista
@@ -644,7 +764,12 @@ function CajaPage({ pestanaInicial = 'caja' }) {
       </header>
 
       <div className="mx-auto max-w-5xl space-y-6 px-4 pt-6 sm:px-6 lg:px-8">
-        <BannerToaster error={errorLista} notificacion={notificacion} onCerrarError={() => setErrorLista('')} />
+        <BannerToaster
+          error={errorLista}
+          notificacion={notificacion}
+          onCerrarError={() => setErrorLista('')}
+          onCerrarNotificacion={() => setNotificacion('')}
+        />
         {errorLista && (
           <div className="rounded-2xl bg-danger/10 px-4 py-3 text-sm font-medium text-danger">
             {errorLista}
@@ -784,16 +909,39 @@ function CajaPage({ pestanaInicial = 'caja' }) {
                                 Fondo:{' '}
                                 <span className="font-semibold text-ink">
                                   {formatearMonto(corte.fondoInicial)}
-                                </span>{' '}
-                                · Contado:{' '}
-                                <span className="font-semibold text-ink">
-                                  {formatearMonto(corte.efectivoContado)}
                                 </span>
+                                {corte.efectivoContado != null ? (
+                                  <>
+                                    {' '}
+                                    · Contado:{' '}
+                                    <span className="font-semibold text-ink">
+                                      {formatearMonto(corte.efectivoContado)}
+                                    </span>
+                                  </>
+                                ) : (
+                                  <span className="text-amber-600"> · Contado: pendiente</span>
+                                )}
                               </p>
                             </div>
-                            <span className={`text-sm font-bold ${tono}`}>
-                              {formatearDifDiferencia(dif)}
-                            </span>
+                            {corte.efectivoContado == null ? (
+                              <span className="rounded-full bg-amber-500/10 px-3 py-1 text-xs font-bold text-amber-600">
+                                Sin contado
+                              </span>
+                            ) : (
+                              <span className={`text-sm font-bold ${tono}`}>
+                                {formatearDifDiferencia(dif)}
+                              </span>
+                            )}
+                          </div>
+                          <div className="mt-3 flex flex-wrap gap-2">
+                            <Button variant="secondary" size="md" onClick={() => abrirResumen(corte)}>
+                              Ver detalle
+                            </Button>
+                            {corte.efectivoContado == null && (
+                              <Button size="md" onClick={() => abrirCompletar(corte)}>
+                                Completar cort
+                              </Button>
+                            )}
                           </div>
                         </li>
                       )
@@ -876,6 +1024,15 @@ function CajaPage({ pestanaInicial = 'caja' }) {
         <ModalFormularioGasto
           onCerrar={() => setModalGasto(false)}
           onGuardar={guardarGasto}
+        />
+      )}
+
+      {modalCompletar && (
+        <ModalCompletarCorte
+          corte={modalCompletar.corte}
+          desglose={modalCompletar.desglose}
+          onCerrar={() => setModalCompletar(null)}
+          onGuardar={guardarCompletarCorte}
         />
       )}
 

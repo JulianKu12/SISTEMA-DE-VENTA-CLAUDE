@@ -25,6 +25,7 @@ const INGREDIENTES = [
   // "porción" no existe en el enum UnidadMedida (kg/g/l/ml/pieza); se usa "pieza".
   { nombre: 'Lechuga', unidadMedida: 'pieza', stock: 30, stockMinimoAlerta: 5, costo: 1 },
   { nombre: 'Refresco cola', unidadMedida: 'pieza', stock: 24, stockMinimoAlerta: 5, costo: 8 },
+  { nombre: 'Pollo', unidadMedida: 'pieza', stock: 20, stockMinimoAlerta: 5, costo: 9 },
 ]
 
 const PRODUCTOS = [
@@ -72,6 +73,13 @@ const MODIFICADORES = [
     ingredienteAfectado: 'Jamón',
     cantidadExtra: 1,
     costoAdicional: 10,
+  },
+  {
+    nombre: 'Pollo en lugar de jamón',
+    tipo: 'Sustituir',
+    ingredienteAfectado: 'Jamón',
+    ingredienteSustituto: 'Pollo',
+    cantidadSustituto: 1,
   },
 ]
 
@@ -223,7 +231,9 @@ async function main() {
           nombre: mod.nombre,
           tipo: mod.tipo,
           ingredienteAfectadoId: idsIngredientes[mod.ingredienteAfectado],
+          ingredienteSustitutoId: mod.ingredienteSustituto ? idsIngredientes[mod.ingredienteSustituto] : null,
           cantidadExtra: mod.cantidadExtra ?? null,
+          cantidadSustituto: mod.cantidadSustituto ?? null,
           costoAdicional: mod.costoAdicional ?? 0,
           estado: 'Activo',
         },

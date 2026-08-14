@@ -543,20 +543,49 @@ function ModalActualizarMonto({ esDomicilio, montoActual, total, onConfirmar, on
   )
 }
 
+// Cuántas unidades de cada línea ya se devolvieron (soporta devoluciones
+// parciales por CANTIDAD: cada devolución guarda las cantidades en
+// cantidadesVentaProducto; los registros viejos sin cantidades se interpretan
+// como la línea completa devuelta).
+function cantidadesYaDevueltasPorLinea(venta) {
+  const mapa = new Map()
+  const cantidadesLinea = new Map((venta.productos || []).map((vp) => [vp.id, vp.cantidad || 0]))
+  for (const d of venta.devoluciones || []) {
+    let ids = []
+    try {
+      ids = JSON.parse(d.ventaProductoIds || '[]').map(Number)
+    } catch {
+      continue
+    }
+    if (ids.length === 0) continue
+    let cants = {}
+    try {
+      cants = JSON.parse(d.cantidadesVentaProducto || '{}')
+    } catch {
+    }
+    for (const id of ids) {
+      const previamente = cants[id] ?? cantidadesLinea.get(id) ?? 0
+      mapa.set(id, (mapa.get(id) || 0) + previamente)
+    }
+  }
+  return mapa
+}
+
 function ModalDevolucion({ venta, onConfirmar, onCancelar }) {
   const montoYaDevuelto = (venta.devoluciones || []).reduce((a, d) => a + d.monto, 0)
   const montoRestante = Math.max(0, (venta.total ?? 0) - montoYaDevuelto)
-  const productosYaDevueltos = new Set(
-    (venta.devoluciones || []).flatMap((d) => {
-      try {
-        return JSON.parse(d.ventaProductoIds || '[]')
-      } catch {
-        return []
-      }
-    }),
-  )
+  const devueltasPorLinea = cantidadesYaDevueltasPorLinea(venta)
+  const pendienteDe = (id) => {
+    const vp = (venta.productos || []).find((p) => p.id === id)
+    return Math.max(0, (vp?.cantidad || 0) - (devueltasPorLinea.get(id) || 0))
+  }
+  const nombreDe = (id) => {
+    const vp = (venta.productos || []).find((p) => p.id === id)
+    return vp?.producto?.nombre || (vp?.combo ? `Combo: ${vp.combo.nombre}` : `#${id}`)
+  }
   const [modo, setModo] = useState(() => (montoYaDevuelto > 0 ? 'productos' : 'toda'))
   const [seleccion, setSeleccion] = useState([])
+  const [cantidades, setCantidades] = useState({})
   const [monto, setMonto] = useState(() =>
     montoYaDevuelto > 0 ? '' : String(montoRestante),
   )
@@ -588,31 +617,67 @@ function ModalDevolucion({ venta, onConfirmar, onCancelar }) {
     setError('')
     if (nuevo === 'toda') {
       setSeleccion([])
+      setCantidades({})
       setMonto(String(montoRestante))
     } else {
       setMonto('')
     }
   }
 
-  const alternarProducto = (id) => {
-    if (productosYaDevueltos.has(id)) return
-    const nuevo = seleccion.includes(id)
-      ? seleccion.filter((x) => x !== id)
-      : [...seleccion, id]
-    setSeleccion(nuevo)
-    setMonto(
-      nuevo.length === 0
-        ? ''
-        : String(
-            (venta.productos || [])
-              .filter((vp) => nuevo.includes(vp.id))
-              .reduce((acc, vp) => acc + (vp.precioCongelado || 0) * (vp.cantidad || 0), 0),
-          ),
+  const recalcularMonto = (ids, cants) =>
+    String(
+      (venta.productos || [])
+        .filter((vp) => ids.includes(vp.id))
+        .reduce(
+          (acc, vp) => acc + (vp.precioCongelado || 0) * ((cants[vp.id] ?? pendienteDe(vp.id)) || 0),
+          0,
+        ),
     )
+
+  const alternarProducto = (id) => {
+    const pend = pendienteDe(id)
+    if (pend <= 0) return
+    const yaSeleccionado = seleccion.includes(id)
+    const nuevo = yaSeleccionado ? seleccion.filter((x) => x !== id) : [...seleccion, id]
+    const cants = yaSeleccionado ? cantidades : { ...cantidades, [id]: pend }
+    setSeleccion(nuevo)
+    setCantidades(cants)
+    setMonto(nuevo.length === 0 ? '' : recalcularMonto(nuevo, cants))
+  }
+
+  const cambiarCantidad = (id, valor) => {
+    const cants = { ...cantidades, [id]: valor }
+    setCantidades(cants)
+    setMonto(recalcularMonto(seleccion, cants))
+  }
+
+  const ajustarCantidad = (id, delta) => {
+    const limite = pendienteDe(id)
+    const actual = Number(cantidades[id] ?? limite) || 1
+    cambiarCantidad(id, String(Math.min(limite, Math.max(1, actual + delta))))
   }
 
   const confirmar = async () => {
     setError('')
+    if (modo !== 'toda') {
+      if (seleccion.length === 0) {
+        setError('Selecciona al menos un producto de la venta')
+        return
+      }
+      for (const id of seleccion) {
+        const valor = cantidades[id]
+        const numero = Number(valor)
+        const pend = pendienteDe(id)
+        if (valor === '' || !Number.isInteger(numero) || numero < 1) {
+          setError('Indica una cantidad válida (entero mayor o igual a 1) para cada producto.')
+          return
+        }
+        if (numero > pend) {
+          setError(`Solo quedan ${pend} unidad(es) por devolver de "${nombreDe(id)}" (máximo ${pend}).`)
+          return
+        }
+      }
+    }
     const montoFinal = Number(monto)
     if (!Number.isFinite(montoFinal) || montoFinal <= 0) {
       setError('Indica un monto a devolver mayor o igual a 0')
@@ -624,10 +689,6 @@ function ModalDevolucion({ venta, onConfirmar, onCancelar }) {
       )
       return
     }
-    if (modo !== 'toda' && seleccion.length === 0) {
-      setError('Selecciona al menos un producto de la venta')
-      return
-    }
     setEnviando(true)
     try {
       await onConfirmar({
@@ -637,6 +698,10 @@ function ModalDevolucion({ venta, onConfirmar, onCancelar }) {
         regresaAInventario,
         medioDevolucion,
         ventaProductoIds: modo === 'toda' ? undefined : seleccion,
+        cantidades:
+          modo === 'toda'
+            ? undefined
+            : Object.fromEntries(seleccion.map((id) => [id, Number(cantidades[id])])),
       })
     } catch (err) {
       setError(err.message)
@@ -679,32 +744,78 @@ function ModalDevolucion({ venta, onConfirmar, onCancelar }) {
               </p>
             )}
             {(venta.productos || []).map((vp) => {
-              const yaDevuelto = productosYaDevueltos.has(vp.id)
+              const pend = pendienteDe(vp.id)
+              const agotado = pend <= 0
               const activo = modo === 'productos' && seleccion.includes(vp.id)
-              const nombre = vp.producto?.nombre || (vp.combo ? `Combo: ${vp.combo.nombre}` : `#${vp.id}`)
+              const nombre = nombreDe(vp.id)
+              const parcial = pend < (vp.cantidad || 1)
               return (
-                <button
+                <div
                   key={vp.id}
-                  type="button"
-                  onClick={() => {
-                    if (yaDevuelto) return
-                    cambiarModo('productos')
-                    alternarProducto(vp.id)
-                  }}
-                  aria-pressed={activo}
-                  disabled={yaDevuelto}
-                  className={`flex w-full items-center justify-between gap-3 rounded-2xl px-4 py-3 text-left transition disabled:cursor-not-allowed disabled:opacity-40 ${
-                    activo ? 'bg-accent/10' : 'bg-surface'
-                  }`}
+                  className={`rounded-2xl transition ${activo ? 'bg-accent/10' : ''}`}
                 >
-                  <span className="min-w-0 truncate text-sm font-semibold text-ink">
-                    {vp.cantidad}× {nombre}
-                    {yaDevuelto && <span className="ml-2 text-xs font-medium text-muted">· ya devuelta</span>}
-                  </span>
-                  <span className="shrink-0 text-sm font-bold text-ink">
-                    {formatearMonto((vp.precioCongelado || 0) * (vp.cantidad || 0))}
-                  </span>
-                </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      if (agotado) return
+                      cambiarModo('productos')
+                      alternarProducto(vp.id)
+                    }}
+                    aria-pressed={activo}
+                    disabled={agotado}
+                    className={`flex w-full items-center justify-between gap-3 px-4 py-3 text-left transition disabled:cursor-not-allowed disabled:opacity-40 ${
+                      activo ? '' : 'bg-surface'
+                    }`}
+                  >
+                    <span className="min-w-0 truncate text-sm font-semibold text-ink">
+                      {vp.cantidad}× {nombre}
+                      {agotado ? (
+                        <span className="ml-2 text-xs font-medium text-muted">· ya devuelta</span>
+                      ) : (
+                        parcial && <span className="ml-2 text-xs font-medium text-amber-600">· quedan {pend}</span>
+                      )}
+                    </span>
+                    <span className="shrink-0 text-sm font-bold text-ink">
+                      {formatearMonto((vp.precioCongelado || 0) * (vp.cantidad || 0))}
+                    </span>
+                  </button>
+                  {activo && (
+                    <div className="flex items-center justify-between gap-3 px-4 pb-3">
+                      <span className="text-xs font-medium text-muted">¿Cuántas unidades?</span>
+                      <div className="flex items-center gap-2">
+                        <button
+                          type="button"
+                          onClick={() => ajustarCantidad(vp.id, -1)}
+                          disabled={Number(cantidades[vp.id]) <= 1}
+                          aria-label="Disminuir cantidad a devolver"
+                          className="flex h-9 w-9 items-center justify-center rounded-full bg-surface text-lg font-bold text-ink transition disabled:opacity-40"
+                        >
+                          −
+                        </button>
+                        <input
+                          type="number"
+                          min="1"
+                          max={pend}
+                          inputMode="numeric"
+                          value={cantidades[vp.id]}
+                          onChange={(e) => cambiarCantidad(vp.id, e.target.value)}
+                          aria-label={`Cantidad a devolver de ${nombre}`}
+                          className="h-9 w-14 rounded-xl border-none bg-surface text-center text-base font-bold text-ink outline-none transition focus:ring-2 focus:ring-accent/40"
+                        />
+                        <button
+                          type="button"
+                          onClick={() => ajustarCantidad(vp.id, 1)}
+                          disabled={Number(cantidades[vp.id]) >= pend}
+                          aria-label="Aumentar cantidad a devolver"
+                          className="flex h-9 w-9 items-center justify-center rounded-full bg-surface text-lg font-bold text-ink transition disabled:opacity-40"
+                        >
+                          +
+                        </button>
+                        <span className="w-16 text-xs text-muted">de {pend}</span>
+                      </div>
+                    </div>
+                  )}
+                </div>
               )
             })}
           </div>
@@ -1180,7 +1291,12 @@ function DetallePedidoPage() {
       </header>
 
       <div className="mx-auto max-w-5xl space-y-6 px-4 pt-6 sm:px-6 lg:px-8">
-        <BannerToaster error={error} notificacion={notificacion} onCerrarError={() => setError('')} />
+        <BannerToaster
+          error={error}
+          notificacion={notificacion}
+          onCerrarError={() => setError('')}
+          onCerrarNotificacion={() => setNotificacion('')}
+        />
         {error && (
           <div className="rounded-2xl bg-danger/10 px-4 py-3 text-sm font-medium text-danger">
             {error}

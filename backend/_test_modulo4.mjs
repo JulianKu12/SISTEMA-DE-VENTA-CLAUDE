@@ -146,6 +146,63 @@ try {
   const badCoca = await req('POST', '/api/ventas', { productos: [{ productoId: coca.id, cantidad: 100 }], metodoPago: 'Efectivo', usuarioId: admin.id })
   ok(badCoca.status === 409 && badCoca.data.stockInsuficiente[0].tipo === 'producto', 'reventa stock insuficiente -> 409')
 
+  console.log('== Sustituir: descuento usa cantidadSustituto ==')
+  const sal = await prisma.ingrediente.create({ data: { nombre: 'Sal', unidadMedida: 'kg', stockActual: 10, stockMinimoAlerta: 0 } })
+  await prisma.movimiento_Inventario.create({ data: { ingredienteId: sal.id, tipoMovimiento: 'Entrada', cantidad: 10 } })
+  const chipotle = await prisma.ingrediente.create({ data: { nombre: 'Chipotle', unidadMedida: 'pieza', stockActual: 10, stockMinimoAlerta: 0 } })
+  await prisma.movimiento_Inventario.create({ data: { ingredienteId: chipotle.id, tipoMovimiento: 'Entrada', cantidad: 10 } })
+
+  // Unidades DISTINTAS (kg vs pieza): el checkbox de "misma cantidad" no está
+  // disponible, la cantidad se indica manualmente (2) y la venta la debe usar.
+  const tortaSal = await prisma.producto.create({ data: { nombre: 'Tortasal', precio: 20, tipo: 'Con_receta' } })
+  await prisma.producto_Ingrediente.create({ data: { productoId: tortaSal.id, ingredienteId: sal.id, cantidad: 1 } })
+
+  const mSubV1 = await req('POST', '/api/modificadores', {
+    nombre: 'Sal por chipotle',
+    tipo: 'Sustituir',
+    ingredienteAfectadoId: sal.id,
+    ingredienteSustitutoId: chipotle.id,
+    cantidadSustituto: 2,
+  })
+  ok(mSubV1.status === 201 && mSubV1.data.cantidadSustituto === 2, 'crear Sustituir (kg a pieza) con cantidad manual 2')
+  await prisma.producto_Modificador.create({ data: { productoId: tortaSal.id, modificadorId: mSubV1.data.id } })
+  const vSub = await req('POST', '/api/ventas', {
+    productos: [{ productoId: tortaSal.id, cantidad: 1, modificadores: [{ modificadorId: mSubV1.data.id }] }],
+    metodoPago: 'Efectivo',
+    usuarioId: admin.id,
+  })
+  ok(vSub.status === 201, 'venta con modificador Sustituir')
+  const stockSal = await prisma.movimiento_Inventario.aggregate({ _sum: { cantidad: true }, where: { ingredienteId: sal.id } })
+  ok(stockSal._sum.cantidad === 10, 'el ingrediente afectado NO se descuenta (se elimina, queda 10)')
+  const stockChipotle = await prisma.movimiento_Inventario.aggregate({ _sum: { cantidad: true }, where: { ingredienteId: chipotle.id } })
+  ok(stockChipotle._sum.cantidad === 8, 'el sustituto se descuenta con cantidadSustituto (10 - 2 = 8), no con la cantidad de la receta (1)')
+
+  // Unidades IGUALES (kg vs kg): la receta pedía 1 de HarinaA, el sustituto se
+  // descuenta con la cantidadSustituto elegida (0.5), NO con la de la receta.
+  const harinaA = await prisma.ingrediente.create({ data: { nombre: 'HarinaA', unidadMedida: 'kg', stockActual: 10, stockMinimoAlerta: 0 } })
+  await prisma.movimiento_Inventario.create({ data: { ingredienteId: harinaA.id, tipoMovimiento: 'Entrada', cantidad: 10 } })
+  const harinaB = await prisma.ingrediente.create({ data: { nombre: 'HarinaB', unidadMedida: 'kg', stockActual: 10, stockMinimoAlerta: 0 } })
+  await prisma.movimiento_Inventario.create({ data: { ingredienteId: harinaB.id, tipoMovimiento: 'Entrada', cantidad: 10 } })
+  const tortaMix = await prisma.producto.create({ data: { nombre: 'Tortamix', precio: 20, tipo: 'Con_receta' } })
+  await prisma.producto_Ingrediente.create({ data: { productoId: tortaMix.id, ingredienteId: harinaA.id, cantidad: 1 } })
+  const mSubV2 = await req('POST', '/api/modificadores', {
+    nombre: 'HarinaA por HarinaB',
+    tipo: 'Sustituir',
+    ingredienteAfectadoId: harinaA.id,
+    ingredienteSustitutoId: harinaB.id,
+    cantidadSustituto: 0.5,
+  })
+  ok(mSubV2.status === 201, 'crear Sustituir con unidades iguales')
+  await prisma.producto_Modificador.create({ data: { productoId: tortaMix.id, modificadorId: mSubV2.data.id } })
+  const vSub2 = await req('POST', '/api/ventas', {
+    productos: [{ productoId: tortaMix.id, cantidad: 1, modificadores: [{ modificadorId: mSubV2.data.id }] }],
+    metodoPago: 'Efectivo',
+    usuarioId: admin.id,
+  })
+  ok(vSub2.status === 201, 'venta Sustituir con unidades iguales')
+  const stockHarinaB = await prisma.movimiento_Inventario.aggregate({ _sum: { cantidad: true }, where: { ingredienteId: harinaB.id } })
+  ok(stockHarinaB._sum.cantidad === 9.5, 'sustituto se descuenta 0.5 (cantidad elegida), no 1 (cantidad original de la receta)')
+
   console.log('== Venta de combos ==')
   const combo = await prisma.combo.create({ data: { nombre: 'Combo Clasico', precioEspecial: 30 } })
   await prisma.combo_Producto.create({ data: { comboId: combo.id, productoId: torta.id, cantidad: 1 } })

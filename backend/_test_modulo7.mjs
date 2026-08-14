@@ -226,6 +226,21 @@ try {
   )
   ok(propioPago.data.venta && propioPago.data.venta.noCobrar === false && propioPago.data.venta.total === pedidoSinNC.data.total, 'venta generada por el repartidor al cobrar (total del pedido, sin noCobrar)')
 
+  console.log('== Número de pedido en el reporte coincide con el panel ==')
+  // El panel principal muestra "Pedido #<pedido.id>". El reporte de ventas no
+  // debe mostrar un "Venta #X" distinto: el identificador que se ve debe ser
+  // EXACTAMENTE el mismo número de pedido (venta.pedidoId === pedido.id).
+  ok(
+    propioPago.data.venta.pedidoId === pedidoSinNC.data.id,
+    `la venta generada queda vinculada al pedido #${pedidoSinNC.data.id} (venta.pedidoId === pedido.id)`
+  )
+  const repVentas = await req('GET', '/api/ventas', undefined, tokenAdmin)
+  const filaReporte = (repVentas.data || []).find((v) => v.id === propioPago.data.venta.id)
+  ok(
+    filaReporte && filaReporte.pedidoId === pedidoSinNC.data.id,
+    'reporte de ventas expone el mismo número de pedido del panel para esa venta'
+  )
+
   console.log('== Repartidor NO puede cobrar un Para_recoger (sin repartidor) ==')
   const pRecoger = await req('POST', '/api/pedidos', {
     tipo: 'Para_recoger', origen: 'Telefono', nombreClienteLibre: 'Cli Recoger',

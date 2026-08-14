@@ -58,6 +58,15 @@ export async function cerrarCaja(payload) {
   return respuesta.json()
 }
 
+export async function completarCorte(diaId, efectivoContado) {
+  const respuesta = await peticion('/api/caja/completar-corte', {
+    metodo: 'POST',
+    body: { diaId, efectivoContado },
+  })
+  if (!respuesta.ok) throw new Error(await extraerMensaje(respuesta, 'No se pudo completar el corte'))
+  return respuesta.json()
+}
+
 export async function obtenerHistorialCaja() {
   const respuesta = await peticion('/api/caja/historial')
   if (!respuesta.ok) throw new Error(await extraerMensaje(respuesta, 'No se pudo cargar el historial de cortes'))

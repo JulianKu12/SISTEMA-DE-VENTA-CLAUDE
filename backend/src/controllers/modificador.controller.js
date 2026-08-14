@@ -9,7 +9,7 @@ const includeCompleto = {
   productoModificadores: { include: { producto: { select: { id: true, nombre: true } } } },
 }
 
-async function validarDatos({ tipo, ingredienteAfectadoId, ingredienteSustitutoId, cantidadExtra, costoAdicional }) {
+async function validarDatos({ tipo, ingredienteAfectadoId, ingredienteSustitutoId, cantidadExtra, cantidadSustituto, costoAdicional }) {
   if (tipo !== undefined && !esEnumValido(tipo, TIPOS_MODIFICADOR)) throw new HttpError(400, 'tipo inválido')
 
   let afectadoId = ingredienteAfectadoId
@@ -27,11 +27,16 @@ async function validarDatos({ tipo, ingredienteAfectadoId, ingredienteSustitutoI
     sustitutoId = sustituto.id
   }
 
+  if (tipo === 'Sustituir' && (cantidadSustituto === undefined || cantidadSustituto === null || !(Number(cantidadSustituto) > 0))) {
+    throw new HttpError(400, 'Un modificador de tipo Sustituir requiere cantidadSustituto mayor a 0')
+  }
+
   const data = {}
   if (tipo !== undefined) data.tipo = tipo
   if (afectadoId !== undefined) data.ingredienteAfectadoId = afectadoId
   if (sustitutoId !== undefined) data.ingredienteSustitutoId = sustitutoId
   if (cantidadExtra !== undefined) data.cantidadExtra = tipo === 'Agregar' ? cantidadExtra : null
+  if (cantidadSustituto !== undefined) data.cantidadSustituto = tipo === 'Sustituir' ? Number(cantidadSustituto) : null
   if (costoAdicional !== undefined) data.costoAdicional = costoAdicional
   return data
 }
@@ -49,11 +54,11 @@ export const obtener = asyncHandler(async (req, res) => {
 })
 
 export const crear = asyncHandler(async (req, res) => {
-  const { nombre, tipo, ingredienteAfectadoId, ingredienteSustitutoId, cantidadExtra, costoAdicional, productoIds } = req.body
+  const { nombre, tipo, ingredienteAfectadoId, ingredienteSustitutoId, cantidadExtra, cantidadSustituto, costoAdicional, productoIds } = req.body
   if (!nombre || typeof nombre !== 'string') throw new HttpError(400, 'El campo nombre es obligatorio')
   if (!esEnumValido(tipo, TIPOS_MODIFICADOR)) throw new HttpError(400, 'tipo inválido')
 
-  const data = await validarDatos({ tipo, ingredienteAfectadoId, ingredienteSustitutoId, cantidadExtra, costoAdicional })
+  const data = await validarDatos({ tipo, ingredienteAfectadoId, ingredienteSustitutoId, cantidadExtra, cantidadSustituto, costoAdicional })
   data.nombre = nombre
 
   let productos = []
@@ -61,6 +66,19 @@ export const crear = asyncHandler(async (req, res) => {
     for (const pid of productoIds) {
       const producto = await prisma.producto.findUnique({ where: { id: Number(pid) } })
       if (!producto) throw new HttpError(404, `El producto ${pid} no existe`)
+      const enReceta = await prisma.producto_Ingrediente.count({
+        where: { productoId: producto.id, ingredienteId: data.ingredienteAfectadoId },
+      })
+      if (enReceta === 0) {
+        const ingrediente = await prisma.ingrediente.findUnique({
+          where: { id: Number(data.ingredienteAfectadoId) },
+          select: { nombre: true },
+        })
+        throw new HttpError(
+          400,
+          `El producto "${producto.nombre}" no incluye el ingrediente "${ingrediente?.nombre}" en su receta y no puede usar este modificador.`
+        )
+      }
       productos.push(producto.id)
     }
   }
@@ -83,8 +101,8 @@ export const actualizar = asyncHandler(async (req, res) => {
   const existente = await prisma.modificador.findUnique({ where: { id: Number(id) } })
   if (!existente) throw new HttpError(404, 'Modificador no encontrado')
 
-  const { nombre, tipo, ingredienteAfectadoId, ingredienteSustitutoId, cantidadExtra, costoAdicional } = req.body
-  const data = await validarDatos({ tipo, ingredienteAfectadoId, ingredienteSustitutoId, cantidadExtra, costoAdicional })
+  const { nombre, tipo, ingredienteAfectadoId, ingredienteSustitutoId, cantidadExtra, cantidadSustituto, costoAdicional } = req.body
+  const data = await validarDatos({ tipo, ingredienteAfectadoId, ingredienteSustitutoId, cantidadExtra, cantidadSustituto, costoAdicional })
   if (nombre !== undefined) data.nombre = nombre
 
   const actualizado = await prisma.modificador.update({ where: { id: existente.id }, data })

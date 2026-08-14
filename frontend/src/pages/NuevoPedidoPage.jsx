@@ -342,20 +342,16 @@ function ModalProducto({ producto, productosMitad, onCancelar, onAgregar }) {
             <section>
               <EtiquetaSeccion>Sustituir</EtiquetaSeccion>
               <div className="space-y-2">
-                {grupos.sustituir.map((m) => {
-                  const afectado = m.ingredienteAfectado?.nombre || 'el ingrediente'
-                  const sustituto = m.ingredienteSustituto?.nombre || ''
-                  return (
-                    <FilaModificador
-                      key={m.id}
-                      marcado={!!seleccion[m.id]}
-                      onToggle={() => toggleMod(m.id)}
-                      etiqueta={`Sustituir ${afectado} por ${sustituto}`.trim()}
-                      costo={m.costoAdicional || 0}
-                      tono="sustituir"
-                    />
-                  )
-                })}
+                {grupos.sustituir.map((m) => (
+                  <FilaModificador
+                    key={m.id}
+                    marcado={!!seleccion[m.id]}
+                    onToggle={() => toggleMod(m.id)}
+                    etiqueta={m.nombre}
+                    costo={m.costoAdicional || 0}
+                    tono="sustituir"
+                  />
+                ))}
               </div>
             </section>
           )}
@@ -530,20 +526,16 @@ function ModalCombo({ combo, onCancelar, onAgregar }) {
                   <div className="mt-3">
                     <EtiquetaSeccion>Sustituir</EtiquetaSeccion>
                     <div className="space-y-2">
-                      {grupos.sustituir.map((m) => {
-                        const afectado = m.ingredienteAfectado?.nombre || 'el ingrediente'
-                        const sustituto = m.ingredienteSustituto?.nombre || ''
-                        return (
-                          <FilaModificador
-                            key={m.id}
-                            marcado={!!seleccion[producto.id]?.[m.id]}
-                            onToggle={() => toggleMod(producto.id, m.id)}
-                            etiqueta={`Sustituir ${afectado} por ${sustituto}`.trim()}
-                            costo={m.costoAdicional || 0}
-                            tono="sustituir"
-                          />
-                        )
-                      })}
+                      {grupos.sustituir.map((m) => (
+                        <FilaModificador
+                          key={m.id}
+                          marcado={!!seleccion[producto.id]?.[m.id]}
+                          onToggle={() => toggleMod(producto.id, m.id)}
+                          etiqueta={m.nombre}
+                          costo={m.costoAdicional || 0}
+                          tono="sustituir"
+                        />
+                      ))}
                     </div>
                   </div>
                 )}
@@ -947,7 +939,13 @@ function NuevoPedidoPage() {
 
   return (
     <main className="min-h-screen bg-surface pb-16">
-      <BannerToaster error={error || errorConfirmacion} onCerrarError={() => setError('')} />
+      <BannerToaster
+        error={error || errorConfirmacion}
+        onCerrarError={() => {
+          setError('')
+          setErrorConfirmacion('')
+        }}
+      />
       <header className="sticky top-0 z-30 border-b border-muted/10 bg-surface/90 backdrop-blur-md">
         <div className="mx-auto flex max-w-7xl items-center gap-3 px-4 py-4 sm:px-6 lg:px-8">
           <button
@@ -1500,7 +1498,7 @@ function NuevoPedidoPage() {
                                 </p>
                               )}
                               {item.modificadores.length > 0 && (
-                                <p className="text-xs text-muted">
+                                <p className="break-words text-xs text-muted">
                                   {item.modificadores.map((m) => m.nombre).join(', ')}
                                 </p>
                               )}
@@ -1511,7 +1509,7 @@ function NuevoPedidoPage() {
                                       .map((m) => m.nombre)
                                       .join(', ')
                                     return p.modificadores?.length > 0 || p.nota ? (
-                                      <li key={p.productoId} className="text-xs text-muted">
+                                      <li key={p.productoId} className="break-words text-xs text-muted">
                                         <span className="font-semibold text-ink">{p.nombre}</span>
                                         {mods ? ` — ${mods}` : ''}
                                         {p.nota ? ` · Nota: ${p.nota}` : ''}
@@ -1521,7 +1519,7 @@ function NuevoPedidoPage() {
                                 </ul>
                               )}
                               {item.nota && (
-                                <p className="text-xs italic text-muted">
+                                <p className="break-words text-xs italic text-muted">
                                   {item.tipoLinea === 'combo' ? 'Nota del combo: ' : 'Nota: '}
                                   {item.nota}
                                 </p>

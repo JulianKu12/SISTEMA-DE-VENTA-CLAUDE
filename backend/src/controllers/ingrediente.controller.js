@@ -4,11 +4,7 @@ import { HttpError } from '../utils/httpError.js'
 import { resolverUsuario } from '../utils/usuario.js'
 import { UNIDADES_MEDIDA, esEnumValido } from '../utils/enums.js'
 
-const OPCIONES_DESACTIVAR = {
-  VENDER_SIN_EL: 'vender_sin_el',
-  SUSPENDER_PRODUCTOS: 'suspender_productos',
-  CANCELAR: 'cancelar',
-}
+const OPCIONES_ACCION = { VENDER_SIN_EL: 'vender_sin_el', SUSPENDER: 'suspender' }
 
 const includeCompleto = {
   productoIngredientes: {
@@ -16,6 +12,17 @@ const includeCompleto = {
   },
   modificadoresAfectados: { select: { id: true, nombre: true } },
   modificadoresSustitutos: { select: { id: true, nombre: true } },
+}
+
+// La unicidad se valida de forma case-insensitive (el índice de SQLite es
+// sensible a mayúsculas/minúsculas, así que la comparación real se hace aquí).
+async function validarNombreUnico(nombre, excluirId) {
+  const normalizado = String(nombre).trim().toLowerCase()
+  const existentes = await prisma.ingrediente.findMany({ select: { id: true, nombre: true } })
+  const duplicado = existentes.find((e) => e.id !== excluirId && e.nombre.trim().toLowerCase() === normalizado)
+  if (duplicado) {
+    throw new HttpError(400, `Ya existe un ingrediente llamado "${duplicado.nombre}". El nombre debe ser único.`)
+  }
 }
 
 export const listar = asyncHandler(async (_req, res) => {
@@ -42,12 +49,15 @@ export const obtener = asyncHandler(async (req, res) => {
 export const crear = asyncHandler(async (req, res) => {
   const { nombre, unidadMedida, stockActual, stockMinimoAlerta, costoUltimaCompra } = req.body
   if (!nombre || typeof nombre !== 'string') throw new HttpError(400, 'El campo nombre es obligatorio')
+  await validarNombreUnico(nombre)
   if (!esEnumValido(unidadMedida, UNIDADES_MEDIDA)) throw new HttpError(400, 'unidadMedida inválida')
   if (typeof stockActual !== 'number' || typeof stockMinimoAlerta !== 'number') {
     throw new HttpError(400, 'stockActual y stockMinimoAlerta deben ser numéricos')
   }
 
-  const ingrediente = await prisma.$transaction(async (tx) => {
+  let ingrediente
+  try {
+    ingrediente = await prisma.$transaction(async (tx) => {
     const nuevo = await tx.ingrediente.create({
       data: {
         nombre,
@@ -78,7 +88,13 @@ export const crear = asyncHandler(async (req, res) => {
       })
     }
     return nuevo
-  })
+    })
+  } catch (e) {
+    if (e.code === 'P2002') {
+      throw new HttpError(400, `Ya existe un ingrediente llamado "${nombre}". El nombre debe ser único.`)
+    }
+    throw e
+  }
 
   res.status(201).json(await prisma.ingrediente.findUnique({ where: { id: ingrediente.id }, include: includeCompleto }))
 })
@@ -105,6 +121,10 @@ export const actualizar = asyncHandler(async (req, res) => {
   for (const campo of CAMPOS_EDITABLES) {
     if (campo in req.body) data[campo] = req.body[campo] ?? null
   }
+  if ('nombre' in data && data.nombre !== existente.nombre) {
+    if (typeof data.nombre !== 'string' || !data.nombre.trim()) throw new HttpError(400, 'nombre inválido')
+    await validarNombreUnico(data.nombre, existente.id)
+  }
 
   const actualizado = await prisma.ingrediente.update({ where: { id: existente.id }, data })
   res.json(actualizado)
@@ -130,63 +150,81 @@ export const desactivar = asyncHandler(async (req, res) => {
     return res.json({ mensaje: 'Ingrediente desactivado', ingrediente: desactivado })
   }
 
-  const opcion = req.body?.opcion
-  if (!opcion) {
+  const decisiones = req.body?.decisiones
+  if (decisiones === undefined) {
     return res.status(409).json({
-      mensaje: 'Este ingrediente se usa en productos activos. Elige cómo proceder.',
+      mensaje: 'Este ingrediente se usa en productos activos. Decide por cada producto qué hacer.',
       requiereConfirmacion: true,
       opciones: {
-        [OPCIONES_DESACTIVAR.VENDER_SIN_EL]: 'Vender esos productos sin este ingrediente (se quita de su receta)',
-        [OPCIONES_DESACTIVAR.SUSPENDER_PRODUCTOS]: 'Suspender esos productos también (disponible_hoy = false)',
-        [OPCIONES_DESACTIVAR.CANCELAR]: 'Cancelar (no desactivar)',
+        [OPCIONES_ACCION.VENDER_SIN_EL]: 'Vender el producto sin este ingrediente (se quita de su receta)',
+        [OPCIONES_ACCION.SUSPENDER]: 'Suspender el producto (disponible_hoy = false)',
       },
       productosAfectados,
     })
   }
+  if (!Array.isArray(decisiones) || decisiones.length === 0) {
+    throw new HttpError(400, 'Selecciona una acción (vender_sin_el o suspender) para cada producto afectado')
+  }
+
+  const mapa = new Map()
+  for (const d of decisiones) {
+    const productoId = Number(d?.productoId)
+    const accion = d?.accion
+    if (!productoId || ![OPCIONES_ACCION.VENDER_SIN_EL, OPCIONES_ACCION.SUSPENDER].includes(accion)) {
+      throw new HttpError(400, 'Cada decisión requiere productoId y una acción válida (vender_sin_el o suspender)')
+    }
+    if (mapa.has(productoId)) throw new HttpError(400, `El producto ${productoId} tiene más de una decisión`)
+    mapa.set(productoId, accion)
+  }
 
   const idsAfectados = productosAfectados.map((p) => p.id)
-
-  if (opcion === OPCIONES_DESACTIVAR.CANCELAR) {
-    return res.json({ mensaje: 'Operación cancelada: el ingrediente no se desactivó', ingrediente })
+  const sinDecision = idsAfectados.filter((pid) => !mapa.has(pid))
+  if (sinDecision.length > 0) {
+    throw new HttpError(
+      400,
+      `Falta la decisión para los productos: ${productosAfectados
+        .filter((p) => sinDecision.includes(p.id))
+        .map((p) => p.nombre)
+        .join(', ')}`
+    )
   }
 
-  if (opcion === OPCIONES_DESACTIVAR.VENDER_SIN_EL) {
-    await prisma.$transaction(async (tx) => {
+  const idsVender = idsAfectados.filter((pid) => mapa.get(pid) === OPCIONES_ACCION.VENDER_SIN_EL)
+  const idsSuspender = idsAfectados.filter((pid) => mapa.get(pid) === OPCIONES_ACCION.SUSPENDER)
+
+  const resultado = await prisma.$transaction(async (tx) => {
+    if (idsVender.length) {
       await tx.producto_Ingrediente.deleteMany({
-        where: { ingredienteId: ingrediente.id, productoId: { in: idsAfectados } },
+        where: { ingredienteId: ingrediente.id, productoId: { in: idsVender } },
       })
-      await tx.ingrediente.update({ where: { id: ingrediente.id }, data: { estado: 'Inactivo' } })
-    })
-    return res.json({
-      mensaje: 'Ingrediente desactivado y removido de las recetas de los productos indicados',
-      ingrediente: await prisma.ingrediente.findUnique({ where: { id: ingrediente.id } }),
-      productosAfectados,
-    })
-  }
+    }
+    let combosSuspendidos = []
+    if (idsSuspender.length) {
+      await tx.producto.updateMany({ where: { id: { in: idsSuspender } }, data: { disponibleHoy: false } })
+      const combos = await tx.combo_Producto.findMany({
+        where: { productoId: { in: idsSuspender }, combo: { estado: 'Activo' } },
+        select: { combo: { select: { id: true, nombre: true } } },
+      })
+      combosSuspendidos = [...new Map(combos.map((c) => [c.combo.id, c.combo])).values()]
+      if (combosSuspendidos.length) {
+        await tx.combo.updateMany({
+          where: { id: { in: combosSuspendidos.map((c) => c.id) } },
+          data: { estado: 'Suspendido' },
+        })
+      }
+    }
+    await tx.ingrediente.update({ where: { id: ingrediente.id }, data: { estado: 'Inactivo' } })
+    return combosSuspendidos
+  })
 
-  if (opcion === OPCIONES_DESACTIVAR.SUSPENDER_PRODUCTOS) {
-    const combos = await prisma.combo_Producto.findMany({
-      where: { productoId: { in: idsAfectados }, combo: { estado: 'Activo' } },
-      select: { combo: { select: { id: true, nombre: true } } },
-    })
-    const combosSuspendidos = [...new Map(combos.map((c) => [c.combo.id, c.combo])).values()]
-    const combosIds = combosSuspendidos.map((c) => c.id)
-
-    await prisma.$transaction(async (tx) => {
-      await tx.producto.updateMany({ where: { id: { in: idsAfectados } }, data: { disponibleHoy: false } })
-      if (combosIds.length) await tx.combo.updateMany({ where: { id: { in: combosIds } }, data: { estado: 'Suspendido' } })
-      await tx.ingrediente.update({ where: { id: ingrediente.id }, data: { estado: 'Inactivo' } })
-    })
-
-    return res.json({
-      mensaje: 'Ingrediente desactivado. Los productos que lo usaban quedaron no disponibles hoy.',
-      ingrediente: await prisma.ingrediente.findUnique({ where: { id: ingrediente.id } }),
-      productosAfectados,
-      ...(combosSuspendidos.length ? { aviso: { mensaje: 'Se suspendieron los combos que incluían esos productos', combosSuspendidos } } : {}),
-    })
-  }
-
-  throw new HttpError(400, 'Opción inválida')
+  res.json({
+    mensaje: 'Ingrediente desactivado. Cada producto se procesó según la acción elegida.',
+    ingrediente: await prisma.ingrediente.findUnique({ where: { id: ingrediente.id } }),
+    productosAfectados,
+    ...(resultado.length
+      ? { aviso: { mensaje: 'Se suspendieron los combos que incluían los productos suspendidos', combosSuspendidos: resultado } }
+      : {}),
+  })
 })
 
 export const reactivar = asyncHandler(async (req, res) => {

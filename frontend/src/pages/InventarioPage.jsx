@@ -384,6 +384,7 @@ function InventarioPage() {
   const [notificacion, setNotificacion] = useState('')
   const [modalEntrada, setModalEntrada] = useState(false)
   const [modalAjuste, setModalAjuste] = useState(false)
+  const [filtroEstado, setFiltroEstado] = useState('activos')
 
   const cargar = async () => {
     setErrorLista('')
@@ -426,6 +427,14 @@ function InventarioPage() {
   }, [stock])
 
   const cuentasActivas = useMemo(() => cuentas.filter((c) => c.estado === 'Activo'), [cuentas])
+
+  const cuentasVisibles = useMemo(() => {
+    return cuentas.filter((c) => {
+      if (filtroEstado === 'activos') return c.estado === 'Activo'
+      if (filtroEstado === 'inactivos') return c.estado !== 'Activo'
+      return true
+    })
+  }, [cuentas, filtroEstado])
 
   const guardarEntrada = async (payload) => {
     const res = await registrarEntrada(payload)
@@ -503,16 +512,45 @@ function InventarioPage() {
               </div>
             </div>
 
+            <div className="mb-3 grid grid-cols-3 gap-1 rounded-full bg-input p-1">
+              {[
+                { id: 'activos', etiqueta: 'Activos' },
+                { id: 'inactivos', etiqueta: 'Inactivos' },
+                { id: 'todos', etiqueta: 'Todos' },
+              ].map((opcion) => {
+                const activo = filtroEstado === opcion.id
+                return (
+                  <button
+                    key={opcion.id}
+                    type="button"
+                    onClick={() => setFiltroEstado(opcion.id)}
+                    aria-pressed={activo}
+                    className={`rounded-full px-2 py-2.5 text-xs font-semibold transition sm:text-sm ${
+                      activo ? 'bg-card text-accent shadow-card' : 'text-muted hover:text-ink'
+                    }`}
+                  >
+                    {opcion.etiqueta}
+                  </button>
+                )
+              })}
+            </div>
+
             {cuentas.length === 0 ? (
               <div className="rounded-3xl bg-card px-6 py-12 text-center shadow-card">
                 <p className="text-sm text-muted">
                   Aún no hay ingredientes ni productos de reventa.
                 </p>
               </div>
+            ) : cuentasVisibles.length === 0 ? (
+              <div className="rounded-3xl bg-card px-6 py-12 text-center shadow-card">
+                <p className="text-sm text-muted">
+                  No hay resultados con el filtro seleccionado.
+                </p>
+              </div>
             ) : (
               <div className="overflow-hidden rounded-3xl bg-card shadow-card">
                 <ul className="divide-y divide-muted/10">
-                  {cuentas.map((cuenta) => (
+                  {cuentasVisibles.map((cuenta) => (
                     <FilaStock key={`${cuenta.tipo}-${cuenta.id}`} cuenta={cuenta} />
                   ))}
                 </ul>

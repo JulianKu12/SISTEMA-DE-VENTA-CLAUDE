@@ -1,7 +1,8 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import Button from '../components/ui/Button'
 import ModalHoja from '../components/ui/ModalHoja'
+import BannerToaster from '../components/ui/BannerToaster'
 import {
   crearIngrediente,
   actualizarIngrediente,
@@ -131,6 +132,46 @@ function selectorPestanasClases(activo) {
   return `rounded-full px-2 py-2.5 text-xs font-semibold transition sm:text-sm ${
     activo ? 'bg-card text-accent shadow-card' : 'text-muted hover:text-ink'
   }`
+}
+
+const OPCIONES_FILTRO_ESTADO = [
+  { id: 'activos', etiqueta: 'Activos' },
+  { id: 'inactivos', etiqueta: 'Inactivos' },
+  { id: 'todos', etiqueta: 'Todos' },
+]
+
+// Buscador por nombre + filtro de estado (Activos/Inactivos/Todos) que se
+// usa en cada sección del menú. Los ítems visibles se mantienen ordenados
+// alfabéticamente dentro de cada filtro.
+function FiltroMenu({ etiqueta, busqueda, onBusqueda, filtro, onFiltro }) {
+  return (
+    <div className="mb-3 space-y-2">
+      <input
+        type="search"
+        value={busqueda}
+        onChange={(e) => onBusqueda(e.target.value)}
+        placeholder="Buscar por nombre…"
+        aria-label={`Buscar ${etiqueta} por nombre`}
+        className="w-full rounded-2xl border-0 bg-card px-4 py-3 text-base text-ink placeholder:text-muted shadow-card focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
+      />
+      <div className="grid grid-cols-3 gap-1 rounded-full bg-input p-1">
+        {OPCIONES_FILTRO_ESTADO.map((opcion) => {
+          const activo = filtro === opcion.id
+          return (
+            <button
+              key={opcion.id}
+              type="button"
+              onClick={() => onFiltro(opcion.id)}
+              aria-pressed={activo}
+              className={selectorPestanasClases(activo)}
+            >
+              {opcion.etiqueta}
+            </button>
+          )
+        })}
+      </div>
+    </div>
+  )
 }
 
 function ModalFormularioIngrediente({ ingrediente, onCerrar, onGuardar }) {
@@ -669,6 +710,10 @@ function ModalFormularioModificador({ modificador, ingredientes, productos, onCe
   const [cantidadExtra, setCantidadExtra] = useState(
     modificador?.cantidadExtra != null ? String(modificador.cantidadExtra) : '',
   )
+  const [cantidadSustituto, setCantidadSustituto] = useState(
+    modificador?.cantidadSustituto != null ? String(modificador.cantidadSustituto) : '',
+  )
+  const [usarCantidadOriginal, setUsarCantidadOriginal] = useState(false)
   const [costoAdicional, setCostoAdicional] = useState(
     modificador?.costoAdicional != null ? String(modificador.costoAdicional) : '0',
   )
@@ -687,6 +732,75 @@ function ModalFormularioModificador({ modificador, ingredientes, productos, onCe
     })
   }
 
+  const productosFiltrados = useMemo(() => {
+    const afectado = Number(ingredienteAfectadoId)
+    if (!afectado) return []
+    return (productos || []).filter((p) =>
+      (p.productoIngredientes || []).some((pi) => Number(pi.ingredienteId) === afectado),
+    )
+  }, [productos, ingredienteAfectadoId])
+
+  const idsFiltrados = productosFiltrados.map((p) => p.id)
+  const todosSeleccionados = idsFiltrados.length > 0 && idsFiltrados.every((id) => productosSeleccionados.has(id))
+
+  const cambiarAfectado = (e) => {
+    setIngredienteAfectadoId(e.target.value)
+    setProductosSeleccionados((set) => {
+      const afectado = Number(e.target.value)
+      const nuevo = new Set()
+      for (const id of set) {
+        const producto = (productos || []).find((p) => p.id === id)
+        if (producto && (producto.productoIngredientes || []).some((pi) => Number(pi.ingredienteId) === afectado)) {
+          nuevo.add(id)
+        }
+      }
+      return nuevo
+    })
+  }
+
+  const alternarSeleccionarTodos = () => {
+    setProductosSeleccionados((set) => {
+      const nuevo = new Set(set)
+      if (todosSeleccionados) {
+        for (const id of idsFiltrados) nuevo.delete(id)
+      } else {
+        for (const id of idsFiltrados) nuevo.add(id)
+      }
+      return nuevo
+    })
+  }
+
+  // ------------------------------------------------------------------
+  // Cantidad del sustituto (tipo Sustituir)
+  // ------------------------------------------------------------------
+  const ingredienteAfectado = ingredientes?.find((i) => Number(i.id) === Number(ingredienteAfectadoId))
+  const ingredienteSustituto = ingredientes?.find((i) => Number(i.id) === Number(ingredienteSustitutoId))
+  const unidadesIguales =
+    !!ingredienteAfectado && !!ingredienteSustituto && ingredienteAfectado.unidadMedida === ingredienteSustituto.unidadMedida
+
+  // Cantidad del ingrediente afectado en la receta de los productos
+  // seleccionados. Si todos coinciden, se usa como autocompletado.
+  const cantidadOriginalCandidata = useMemo(() => {
+    const afectado = Number(ingredienteAfectadoId)
+    if (!afectado) return null
+    let valor = null
+    for (const p of productos || []) {
+      if (!productosSeleccionados.has(p.id)) continue
+      const pi = (p.productoIngredientes || []).find((x) => Number(x.ingredienteId) === afectado)
+      if (!pi) continue
+      if (valor === null) valor = pi.cantidad
+      else if (valor !== pi.cantidad) return null
+    }
+    return valor
+  }, [productos, productosSeleccionados, ingredienteAfectadoId])
+
+  const toggleUsarCantidadOriginal = (marcado) => {
+    setUsarCantidadOriginal(marcado)
+    if (marcado && unidadesIguales && cantidadOriginalCandidata != null) {
+      setCantidadSustituto(String(cantidadOriginalCandidata))
+    }
+  }
+
   const guardar = async (e) => {
     e.preventDefault()
     setError('')
@@ -697,6 +811,9 @@ function ModalFormularioModificador({ modificador, ingredientes, productos, onCe
     }
     if (tipo === 'Sustituir' && ingredienteSustitutoId === ingredienteAfectadoId) {
       return setError('El ingrediente sustituto no puede ser el mismo que el afectado')
+    }
+    if (tipo === 'Sustituir' && (cantidadSustituto === '' || Number(cantidadSustituto) <= 0)) {
+      return setError('Indica la cantidad a usar del sustituto')
     }
     if (tipo === 'Agregar' && (cantidadExtra === '' || Number(cantidadExtra) <= 0)) {
       return setError('Indica la cantidad extra a agregar')
@@ -716,6 +833,7 @@ function ModalFormularioModificador({ modificador, ingredientes, productos, onCe
     if (tipo === 'Sustituir') {
       payload.ingredienteSustitutoId = Number(ingredienteSustitutoId)
       payload.cantidadExtra = null
+      payload.cantidadSustituto = Number(cantidadSustituto)
     }
     if (tipo === 'Quitar') {
       payload.cantidadExtra = null
@@ -786,7 +904,7 @@ function ModalFormularioModificador({ modificador, ingredientes, productos, onCe
             id="mod-afectado"
             className={CLASE_INPUT}
             value={ingredienteAfectadoId}
-            onChange={(e) => setIngredienteAfectadoId(e.target.value)}
+            onChange={cambiarAfectado}
           >
             <option value="">Selecciona…</option>
             {ingredientes.map((ing) => (
@@ -833,37 +951,104 @@ function ModalFormularioModificador({ modificador, ingredientes, productos, onCe
           </div>
         )}
         {tipo === 'Sustituir' && (
-          <div className="space-y-1.5">
-            <label className="block text-sm font-semibold text-ink" htmlFor="mod-sustituto">
-              Ingrediente sustituto
-            </label>
-            <select
-              id="mod-sustituto"
-              className={CLASE_INPUT}
-              value={ingredienteSustitutoId}
-              onChange={(e) => setIngredienteSustitutoId(e.target.value)}
-            >
-              <option value="">Selecciona…</option>
-              {ingredientes.map((ing) => (
-                <option key={ing.id} value={ing.id}>
-                  {ing.nombre} ({ing.unidadMedida})
-                </option>
-              ))}
-            </select>
-          </div>
+          <>
+            <div className="space-y-1.5">
+              <label className="block text-sm font-semibold text-ink" htmlFor="mod-sustituto">
+                Ingrediente sustituto
+              </label>
+              <select
+                id="mod-sustituto"
+                className={CLASE_INPUT}
+                value={ingredienteSustitutoId}
+                onChange={(e) => setIngredienteSustitutoId(e.target.value)}
+              >
+                <option value="">Selecciona…</option>
+                {ingredientes.map((ing) => (
+                  <option key={ing.id} value={ing.id}>
+                    {ing.nombre} ({ing.unidadMedida})
+                  </option>
+                ))}
+              </select>
+            </div>
+            <div className="rounded-2xl bg-input/60 p-4 space-y-3">
+              <label className="flex items-start gap-3 cursor-pointer select-none">
+                <input
+                  type="checkbox"
+                  checked={!unidadesIguales ? false : usarCantidadOriginal}
+                  disabled={!unidadesIguales}
+                  onChange={(e) => toggleUsarCantidadOriginal(e.target.checked)}
+                  className="mt-0.5 h-4 w-4 shrink-0 accent-accent"
+                />
+                <span className="text-sm font-semibold text-ink">
+                  Usar la misma cantidad que el ingrediente original
+                </span>
+              </label>
+              {!unidadesIguales ? (
+                <p className="text-xs text-muted">
+                  {ingredienteAfectado && ingredienteSustituto
+                    ? `No disponible: ${ingredienteAfectado.nombre} se mide en ${ingredienteAfectado.unidadMedida} y ${ingredienteSustituto.nombre} se mide en ${ingredienteSustituto.unidadMedida}, debes indicar la cantidad manualmente.`
+                    : 'Selecciona el ingrediente sustituto para comparar las unidades.'}
+                </p>
+              ) : (
+                <p className="text-xs text-muted">
+                  {usarCantidadOriginal
+                    ? cantidadOriginalCandidata != null
+                      ? `Se autocompletó con ${cantidadOriginalCandidata} ${ingredienteAfectado?.unidadMedida} (la cantidad del ingrediente original en la receta).`
+                      : 'El campo de cantidad queda libre: se igualará cuando se calcule por producto.'
+                    : 'Autocompleta la cantidad con la que lleva el ingrediente original en la receta.'}
+                </p>
+              )}
+              <div className="space-y-1.5">
+                <label className="block text-sm font-semibold text-ink" htmlFor="mod-cant-sust">
+                  Cantidad a usar del sustituto {ingredienteSustituto ? `(${ingredienteSustituto.unidadMedida})` : ''}
+                </label>
+                <input
+                  id="mod-cant-sust"
+                  className={CLASE_INPUT}
+                  type="number"
+                  min="0"
+                  step="any"
+                  inputMode="decimal"
+                  value={cantidadSustituto}
+                  onChange={(e) => setCantidadSustituto(e.target.value)}
+                  placeholder="0"
+                />
+              </div>
+            </div>
+          </>
         )}
         <div className="space-y-2">
-          <span className="block text-sm font-semibold text-ink">
-            Productos que usan este modificador
-          </span>
+          <div className="flex items-center justify-between gap-3">
+            <span className="block text-sm font-semibold text-ink">
+              Productos que usan este modificador
+            </span>
+            {productosFiltrados.length > 0 && (
+              <label className="flex cursor-pointer items-center gap-2 text-sm font-semibold text-muted">
+                <input
+                  type="checkbox"
+                  checked={todosSeleccionados}
+                  onChange={alternarSeleccionarTodos}
+                  className="h-5 w-5 accent-[#007aff]"
+                />
+                Seleccionar todos
+              </label>
+            )}
+          </div>
+          <p className="text-xs text-muted">
+            Se muestran solo los productos cuya receta contiene el ingrediente afectado.
+          </p>
           <div className="overflow-hidden rounded-2xl bg-surface">
-            {productos.length === 0 ? (
+            {!ingredienteAfectadoId ? (
               <p className="px-4 py-4 text-sm text-muted">
-                Aún no hay productos para asociar.
+                Selecciona el ingrediente afectado para ver los productos compatibles.
+              </p>
+            ) : productosFiltrados.length === 0 ? (
+              <p className="px-4 py-4 text-sm text-muted">
+                Ningún producto incluye este ingrediente en su receta.
               </p>
             ) : (
-              <ul className="divide-y divide-muted/10">
-                {productos.map((p) => (
+              <ul className="max-h-56 divide-y divide-muted/10 overflow-y-auto">
+                {productosFiltrados.map((p) => (
                   <li key={p.id}>
                     <label className="flex cursor-pointer items-center justify-between gap-3 px-4 py-3">
                       <span className="text-sm font-semibold text-ink">{p.nombre}</span>
@@ -879,6 +1064,11 @@ function ModalFormularioModificador({ modificador, ingredientes, productos, onCe
               </ul>
             )}
           </div>
+          {productosFiltrados.length > 0 && (
+            <p className="text-xs text-muted">
+              {productosSeleccionados.size} seleccionado{productosSeleccionados.size === 1 ? '' : 's'}.
+            </p>
+          )}
         </div>
         <div className="flex gap-3 pt-2">
           <button
@@ -898,6 +1088,99 @@ function ModalFormularioModificador({ modificador, ingredientes, productos, onCe
           </button>
         </div>
       </form>
+    </ModalHoja>
+  )
+}
+
+function ModalDesactivarIngrediente({ datos, error, desactivando, onCerrar, onConfirmar }) {
+  const productos = datos.productosAfectados || []
+  const [decisiones, setDecisiones] = useState(() => new Map(productos.map((p) => [p.id, 'vender_sin_el'])))
+
+  const cambiarAccion = (id, accion) => {
+    setDecisiones((m) => {
+      const nuevo = new Map(m)
+      nuevo.set(id, accion)
+      return nuevo
+    })
+  }
+
+  return (
+    <ModalHoja
+      abierto
+      titulo="Desactivar ingrediente"
+      subtitulo="Este ingrediente se usa en productos activos. Decide qué hacer con cada uno."
+      onCerrar={onCerrar}
+    >
+      {error && (
+        <div className="rounded-2xl bg-danger/10 px-4 py-3 text-sm font-medium text-danger">{error}</div>
+      )}
+      <ul className="mt-2 space-y-2">
+        {productos.map((p) => {
+          const accion = decisiones.get(p.id) || 'vender_sin_el'
+          return (
+            <li key={p.id} className="rounded-2xl bg-surface px-4 py-3">
+              <div className="flex items-center justify-between gap-3">
+                <span className="text-sm font-semibold text-ink">{p.nombre}</span>
+                <span className="text-xs text-muted">
+                  {p.disponibleHoy ? 'Disponible hoy' : 'No disponible hoy'}
+                </span>
+              </div>
+              <div className="mt-2.5 grid grid-cols-1 gap-2 sm:grid-cols-2">
+                <label
+                  className={`flex cursor-pointer select-none items-center justify-between gap-2 rounded-2xl px-3.5 py-2.5 text-sm font-semibold transition ${
+                    accion === 'vender_sin_el' ? 'bg-accent/10 text-accent' : 'bg-input text-muted'
+                  }`}
+                >
+                  Vender sin este ingrediente
+                  <input
+                    type="radio"
+                    name={`prod-${p.id}`}
+                    checked={accion === 'vender_sin_el'}
+                    onChange={() => cambiarAccion(p.id, 'vender_sin_el')}
+                    className="h-4 w-4 accent-[#007aff]"
+                  />
+                </label>
+                <label
+                  className={`flex cursor-pointer select-none items-center justify-between gap-2 rounded-2xl px-3.5 py-2.5 text-sm font-semibold transition ${
+                    accion === 'suspender' ? 'bg-amber-500/15 text-amber-600' : 'bg-input text-muted'
+                  }`}
+                >
+                  Suspender este producto
+                  <input
+                    type="radio"
+                    name={`prod-${p.id}`}
+                    checked={accion === 'suspender'}
+                    onChange={() => cambiarAccion(p.id, 'suspender')}
+                    className="h-4 w-4 accent-[#ff9500]"
+                  />
+                </label>
+              </div>
+            </li>
+          )
+        })}
+      </ul>
+      <div className="mt-6 space-y-2.5">
+        <button
+          type="button"
+          onClick={() =>
+            onConfirmar(
+              [...decisiones].map(([productoId, accion]) => ({ productoId, accion })),
+            )
+          }
+          disabled={desactivando !== null}
+          className="inline-flex min-h-12 w-full select-none items-center justify-center gap-2 rounded-full bg-accent px-5 py-3 text-base font-semibold text-white shadow-[0_4px_14px_rgb(0_122_255/0.35)] transition duration-150 ease-out active:scale-[0.97] disabled:opacity-50"
+        >
+          {desactivando !== null ? 'Desactivando…' : 'Desactivar ingrediente'}
+        </button>
+        <button
+          type="button"
+          onClick={onCerrar}
+          disabled={desactivando !== null}
+          className="inline-flex min-h-12 w-full select-none items-center justify-center gap-2 rounded-full bg-muted/10 px-5 py-3 text-base font-semibold text-ink transition duration-150 ease-out active:scale-[0.97] disabled:opacity-50"
+        >
+          Cancelar
+        </button>
+      </div>
     </ModalHoja>
   )
 }
@@ -1045,6 +1328,13 @@ function ConfiguracionMenuPage() {
   const [errorLista, setErrorLista] = useState('')
   const [notificacion, setNotificacion] = useState('')
 
+  const [filtros, setFiltros] = useState({
+    ingredientes: { busqueda: '', estado: 'activos' },
+    productos: { busqueda: '', estado: 'activos' },
+    modificadores: { busqueda: '', estado: 'activos' },
+    combos: { busqueda: '', estado: 'activos' },
+  })
+
   const [modalIngrediente, setModalIngrediente] = useState(null)
   const [desactivarIng, setDesactivarIng] = useState(null)
   const [desactivandoIng, setDesactivandoIng] = useState(null)
@@ -1191,23 +1481,27 @@ function ConfiguracionMenuPage() {
     }
   }
 
-  const confirmarDesactivarIngrediente = async (opcion) => {
+  const confirmarDesactivarIngrediente = async (decisiones) => {
     const pendiente = desactivarIng
     setDesactivandoIng(pendiente.ingrediente.id)
     try {
-      const res = await desactivarIngrediente(pendiente.ingrediente.id, opcion)
+      const res = await desactivarIngrediente(pendiente.ingrediente.id, decisiones)
       if (res.status === 200) {
         setNotificacion(res.datos.mensaje || 'Ingrediente desactivado')
         recargarIngredientes()
         recargarProductos()
         recargarCombos()
         if (res.datos.aviso) {
-          setAvisoCombos({ titulo: 'Combos suspendidos', mensaje: res.datos.aviso.mensaje, combos: res.datos.aviso.combosSuspendidos })
+          setAvisoCombos({
+            titulo: 'Combos suspendidos',
+            mensaje: res.datos.aviso.mensaje,
+            combos: res.datos.aviso.combosSuspendidos,
+          })
         }
       }
       setDesactivarIng(null)
     } catch (err) {
-      setErrorLista(err.message)
+      setDesactivarIng((p) => (p ? { ...p, error: err.message } : p))
     } finally {
       setDesactivandoIng(null)
     }
@@ -1456,6 +1750,28 @@ function ConfiguracionMenuPage() {
     }
   }
 
+  const actualizarFiltro = (clave, cambios) =>
+    setFiltros((f) => ({ ...f, [clave]: { ...f[clave], ...cambios } }))
+
+  const filtrarMenu = (lista, clave) => {
+    if (!lista) return []
+    const { busqueda, estado } = filtros[clave]
+    const texto = busqueda.trim().toLowerCase()
+    return lista
+      .filter((item) => {
+        if (estado === 'activos' && item.estado !== 'Activo') return false
+        if (estado === 'inactivos' && item.estado === 'Activo') return false
+        if (texto && !item.nombre.toLowerCase().includes(texto)) return false
+        return true
+      })
+      .sort((a, b) => a.nombre.localeCompare(b.nombre))
+  }
+
+  const ingredientesVisibles = filtrarMenu(ingredientes, 'ingredientes')
+  const productosVisibles = filtrarMenu(productos, 'productos')
+  const modificadoresVisibles = filtrarMenu(modificadores, 'modificadores')
+  const combosVisibles = filtrarMenu(combos, 'combos')
+
   const cargandoInicial =
     !errorLista && ingredientes === null && productos === null && modificadores === null && combos === null
   const enPestanaIngredientes = pestana === 'ingredientes'
@@ -1465,6 +1781,12 @@ function ConfiguracionMenuPage() {
 
   return (
     <main className="min-h-screen bg-surface pb-16">
+      <BannerToaster
+        error={errorLista}
+        notificacion={notificacion}
+        onCerrarError={() => setErrorLista('')}
+        onCerrarNotificacion={() => setNotificacion('')}
+      />
       <header className="sticky top-0 z-30 border-b border-muted/10 bg-surface/90 backdrop-blur-md">
         <div className="mx-auto flex max-w-5xl items-center gap-3 px-4 py-4 sm:px-6 lg:px-8">
           <button
@@ -1533,21 +1855,36 @@ function ConfiguracionMenuPage() {
           <section>
             <div className="mb-3 flex items-center justify-between gap-3">
               <EtiquetaSeccion>
-                {ingredientes.length} ingrediente{ingredientes.length === 1 ? '' : 's'}
+                {ingredientesVisibles.length} ingrediente
+                {ingredientesVisibles.length === 1 ? '' : 's'}
               </EtiquetaSeccion>
               <Button size="md" onClick={() => setModalIngrediente({ modo: 'nuevo' })}>
                 <IconoMas /> Nuevo ingrediente
               </Button>
             </div>
 
+            <FiltroMenu
+              etiqueta="ingredientes"
+              busqueda={filtros.ingredientes.busqueda}
+              onBusqueda={(v) => actualizarFiltro('ingredientes', { busqueda: v })}
+              filtro={filtros.ingredientes.estado}
+              onFiltro={(v) => actualizarFiltro('ingredientes', { estado: v })}
+            />
+
             {ingredientes.length === 0 ? (
               <div className="rounded-3xl bg-card px-6 py-12 text-center shadow-card">
                 <p className="text-sm text-muted">Aún no hay ingredientes. Crea el primero.</p>
               </div>
+            ) : ingredientesVisibles.length === 0 ? (
+              <div className="rounded-3xl bg-card px-6 py-12 text-center shadow-card">
+                <p className="text-sm text-muted">
+                  No hay resultados con la búsqueda o el filtro seleccionado.
+                </p>
+              </div>
             ) : (
               <div className="overflow-hidden rounded-3xl bg-card shadow-card">
                 <ul className="divide-y divide-muted/10">
-                  {ingredientes.map((ing) => {
+                  {ingredientesVisibles.map((ing) => {
                     const stock = estadoStock(ing)
                     const desactivado = ing.estado === 'Inactivo'
                     const ocupado = desactivandoIng === ing.id
@@ -1619,22 +1956,37 @@ function ConfiguracionMenuPage() {
           <section>
             <div className="mb-3 flex items-center justify-between gap-3">
               <EtiquetaSeccion>
-                {productos.length} producto{productos.length === 1 ? '' : 's'}
+                {productosVisibles.length} producto{productosVisibles.length === 1 ? '' : 's'}
               </EtiquetaSeccion>
               <Button size="md" onClick={() => setModalProducto({ modo: 'nuevo' })}>
                 <IconoMas /> Nuevo producto
               </Button>
             </div>
 
+            <FiltroMenu
+              etiqueta="productos"
+              busqueda={filtros.productos.busqueda}
+              onBusqueda={(v) => actualizarFiltro('productos', { busqueda: v })}
+              filtro={filtros.productos.estado}
+              onFiltro={(v) => actualizarFiltro('productos', { estado: v })}
+            />
+
             {productos.length === 0 ? (
               <div className="rounded-3xl bg-card px-6 py-12 text-center shadow-card">
                 <p className="text-sm text-muted">Aún no hay productos. Crea el primero.</p>
               </div>
+            ) : productosVisibles.length === 0 ? (
+              <div className="rounded-3xl bg-card px-6 py-12 text-center shadow-card">
+                <p className="text-sm text-muted">
+                  No hay resultados con la búsqueda o el filtro seleccionado.
+                </p>
+              </div>
             ) : (
               <div className="overflow-hidden rounded-3xl bg-card shadow-card">
                 <ul className="divide-y divide-muted/10">
-                  {productos.map((prod) => {
+                  {productosVisibles.map((prod) => {
                     const desactivado = prod.estado === 'Inactivo'
+                    const switchActivo = prod.disponibleHoy && !desactivado
                     return (
                       <li key={prod.id} className="flex items-center gap-3 px-5 py-4">
                         <div className="min-w-0 flex-1">
@@ -1661,19 +2013,22 @@ function ConfiguracionMenuPage() {
                             <button
                               type="button"
                               onClick={() => alternarDisponibilidad(prod)}
-                              aria-pressed={prod.disponibleHoy}
-                              aria-label={`Disponible hoy ${prod.disponibleHoy ? 'activado' : 'desactivado'}`}
+                              disabled={desactivado}
+                              aria-pressed={switchActivo}
+                              aria-label={`Disponible hoy ${switchActivo ? 'activado' : 'desactivado'}`}
                               className={`relative h-7 w-12 rounded-full transition ${
-                                prod.disponibleHoy ? 'bg-accent' : 'bg-muted/40'
-                              }`}
+                                desactivado ? 'cursor-not-allowed opacity-50' : ''
+                              } ${switchActivo ? 'bg-accent' : 'bg-muted/40'}`}
                             >
                               <span
                                 className={`absolute top-0.5 h-6 w-6 rounded-full bg-white shadow transition-all ${
-                                  prod.disponibleHoy ? 'left-[22px]' : 'left-0.5'
+                                  switchActivo ? 'left-[22px]' : 'left-0.5'
                                 }`}
                               />
                             </button>
-                            <span className="text-[10px] font-medium text-muted">Disponible</span>
+                            <span className="text-[10px] font-medium text-muted">
+                              {desactivado ? 'Inactivo' : 'Disponible'}
+                            </span>
                           </div>
                           <InsigniaEstado estado={prod.estado} />
                           <div className="flex items-center gap-1">
@@ -1724,21 +2079,36 @@ function ConfiguracionMenuPage() {
           <section>
             <div className="mb-3 flex items-center justify-between gap-3">
               <EtiquetaSeccion>
-                {modificadores.length} modificador{modificadores.length === 1 ? '' : 'es'}
+                {modificadoresVisibles.length} modificador
+                {modificadoresVisibles.length === 1 ? '' : 'es'}
               </EtiquetaSeccion>
               <Button size="md" onClick={() => setModalModificador({ modo: 'nuevo' })}>
                 <IconoMas /> Nuevo modificador
               </Button>
             </div>
 
+            <FiltroMenu
+              etiqueta="modificadores"
+              busqueda={filtros.modificadores.busqueda}
+              onBusqueda={(v) => actualizarFiltro('modificadores', { busqueda: v })}
+              filtro={filtros.modificadores.estado}
+              onFiltro={(v) => actualizarFiltro('modificadores', { estado: v })}
+            />
+
             {modificadores.length === 0 ? (
               <div className="rounded-3xl bg-card px-6 py-12 text-center shadow-card">
                 <p className="text-sm text-muted">Aún no hay modificadores. Crea el primero.</p>
               </div>
+            ) : modificadoresVisibles.length === 0 ? (
+              <div className="rounded-3xl bg-card px-6 py-12 text-center shadow-card">
+                <p className="text-sm text-muted">
+                  No hay resultados con la búsqueda o el filtro seleccionado.
+                </p>
+              </div>
             ) : (
               <div className="overflow-hidden rounded-3xl bg-card shadow-card">
                 <ul className="divide-y divide-muted/10">
-                  {modificadores.map((mod) => {
+                  {modificadoresVisibles.map((mod) => {
                     const desactivado = mod.estado === 'Inactivo'
                     const ocupado = desactivandoMod === mod.id
                     const etiquetaTipo =
@@ -1830,21 +2200,35 @@ function ConfiguracionMenuPage() {
           <section>
             <div className="mb-3 flex items-center justify-between gap-3">
               <EtiquetaSeccion>
-                {combos.length} combo{combos.length === 1 ? '' : 's'}
+                {combosVisibles.length} combo{combosVisibles.length === 1 ? '' : 's'}
               </EtiquetaSeccion>
               <Button size="md" onClick={() => setModalCombo({ modo: 'nuevo' })}>
                 <IconoMas /> Nuevo combo
               </Button>
             </div>
 
+            <FiltroMenu
+              etiqueta="combos"
+              busqueda={filtros.combos.busqueda}
+              onBusqueda={(v) => actualizarFiltro('combos', { busqueda: v })}
+              filtro={filtros.combos.estado}
+              onFiltro={(v) => actualizarFiltro('combos', { estado: v })}
+            />
+
             {combos.length === 0 ? (
               <div className="rounded-3xl bg-card px-6 py-12 text-center shadow-card">
                 <p className="text-sm text-muted">Aún no hay combos. Crea el primero.</p>
               </div>
+            ) : combosVisibles.length === 0 ? (
+              <div className="rounded-3xl bg-card px-6 py-12 text-center shadow-card">
+                <p className="text-sm text-muted">
+                  No hay resultados con la búsqueda o el filtro seleccionado.
+                </p>
+              </div>
             ) : (
               <div className="overflow-hidden rounded-3xl bg-card shadow-card">
                 <ul className="divide-y divide-muted/10">
-                  {combos.map((combo) => {
+                  {combosVisibles.map((combo) => {
                     const desactivado = combo.estado === 'Inactivo'
                     return (
                       <li key={combo.id} className="flex items-center gap-3 px-5 py-4">
@@ -1932,49 +2316,13 @@ function ConfiguracionMenuPage() {
       )}
 
       {desactivarIng && (
-        <ModalHoja
-          abierto
-          titulo="Desactivar ingrediente"
-          subtitulo="Este ingrediente se usa en productos activos. ¿Cómo quieres proceder?"
+        <ModalDesactivarIngrediente
+          datos={desactivarIng.datos}
+          error={desactivarIng.error}
+          desactivando={desactivandoIng}
           onCerrar={() => setDesactivarIng(null)}
-        >
-          <ul className="mt-2 space-y-1.5">
-            {(desactivarIng.datos.productosAfectados || []).map((p) => (
-              <li key={p.id} className="flex items-center justify-between rounded-2xl bg-surface px-4 py-3">
-                <span className="text-sm font-semibold text-ink">{p.nombre}</span>
-                <span className="text-xs text-muted">
-                  {p.disponibleHoy ? 'Disponible hoy' : 'No disponible hoy'}
-                </span>
-              </li>
-            ))}
-          </ul>
-          <div className="mt-6 space-y-2.5">
-            <button
-              type="button"
-              onClick={() => confirmarDesactivarIngrediente('vender_sin_el')}
-              disabled={desactivandoIng !== null}
-              className="inline-flex min-h-12 w-full select-none items-center justify-center gap-2 rounded-full bg-accent px-5 py-3 text-base font-semibold text-white shadow-[0_4px_14px_rgb(0_122_255/0.35)] transition duration-150 ease-out active:scale-[0.97] disabled:opacity-50"
-            >
-              Vender sin este ingrediente
-            </button>
-            <button
-              type="button"
-              onClick={() => confirmarDesactivarIngrediente('suspender_productos')}
-              disabled={desactivandoIng !== null}
-              className="inline-flex min-h-12 w-full select-none items-center justify-center gap-2 rounded-full bg-amber-500 px-5 py-3 text-base font-semibold text-white transition duration-150 ease-out active:scale-[0.97] disabled:opacity-50"
-            >
-              Suspender esos productos
-            </button>
-            <button
-              type="button"
-              onClick={() => setDesactivarIng(null)}
-              disabled={desactivandoIng !== null}
-              className="inline-flex min-h-12 w-full select-none items-center justify-center gap-2 rounded-full bg-muted/10 px-5 py-3 text-base font-semibold text-ink transition duration-150 ease-out active:scale-[0.97] disabled:opacity-50"
-            >
-              Cancelar
-            </button>
-          </div>
-        </ModalHoja>
+          onConfirmar={confirmarDesactivarIngrediente}
+        />
       )}
 
       {eliminarIng && (

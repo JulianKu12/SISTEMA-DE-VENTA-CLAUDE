@@ -45,10 +45,10 @@ export async function actualizarIngrediente(id, payload) {
   return respuesta.json()
 }
 
-export async function desactivarIngrediente(id, opcion) {
+export async function desactivarIngrediente(id, decisiones) {
   const respuesta = await peticion(`/api/ingredientes/${id}/desactivar`, {
     metodo: 'PATCH',
-    body: opcion ? { opcion } : {},
+    body: Array.isArray(decisiones) && decisiones.length ? { decisiones } : {},
   })
   const datos = await respuesta.json().catch(() => ({}))
   if (!respuesta.ok && !(respuesta.status === 409 && datos.requiereConfirmacion)) {

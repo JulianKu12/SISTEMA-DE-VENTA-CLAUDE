@@ -10,6 +10,51 @@ const includeCompleto = {
   combosProductos: { include: { combo: { select: { id: true, nombre: true, estado: true } } } },
 }
 
+// La unicidad se valida de forma case-insensitive (el índice de SQLite es
+// sensible a mayúsculas/minúsculas, así que la comparación real se hace aquí).
+async function validarNombreUnico(nombre, excluirId) {
+  const normalizado = String(nombre).trim().toLowerCase()
+  const existentes = await prisma.producto.findMany({ select: { id: true, nombre: true } })
+  const duplicado = existentes.find((e) => e.id !== excluirId && e.nombre.trim().toLowerCase() === normalizado)
+  if (duplicado) {
+    throw new HttpError(400, `Ya existe un producto llamado "${duplicado.nombre}". El nombre debe ser único.`)
+  }
+}
+
+// Un producto Con_receta solo puede estar activo/disponible si TODOS los
+// ingredientes de su receta siguen activos.
+async function validarRecetaActiva(productoId) {
+  const receta = await prisma.producto_Ingrediente.findMany({
+    where: { productoId },
+    include: { ingrediente: { select: { id: true, nombre: true, estado: true } } },
+  })
+  const inactivos = receta.filter((r) => r.ingrediente.estado !== 'Activo')
+  if (inactivos.length > 0) {
+    throw new HttpError(
+      409,
+      `No se puede reactivar: la receta incluye ingrediente(s) inactivo(s): ${inactivos
+        .map((r) => r.ingrediente.nombre)
+        .join(', ')}. Reactiva primero ese(s) ingrediente(s).`
+    )
+  }
+}
+
+// Verifica que el producto contenga en su receta el ingrediente afectado de
+// un modificador, para que solo se pueda asociar a productos compatibles.
+async function validarProductoParaModificador(productoId, afectadoId) {
+  const enReceta = await prisma.producto_Ingrediente.count({
+    where: { productoId, ingredienteId: afectadoId },
+  })
+  if (enReceta === 0) {
+    const producto = await prisma.producto.findUnique({ where: { id: productoId }, select: { nombre: true } })
+    const ingrediente = await prisma.ingrediente.findUnique({ where: { id: afectadoId }, select: { nombre: true } })
+    throw new HttpError(
+      400,
+      `El producto "${producto?.nombre ?? productoId}" no incluye el ingrediente "${ingrediente?.nombre ?? afectadoId}" en su receta y no puede usar este modificador.`
+    )
+  }
+}
+
 async function validarReceta(ingredientes) {
   if (!Array.isArray(ingredientes) || ingredientes.length === 0) {
     throw new HttpError(400, 'Un producto con receta requiere al menos un ingrediente')
@@ -60,6 +105,7 @@ export const obtener = asyncHandler(async (req, res) => {
 export const crear = asyncHandler(async (req, res) => {
   const { nombre, precio, tipo, permiteMitadYMitad, disponibleHoy, ingredientes, stockInicial, costo } = req.body
   if (!nombre || typeof nombre !== 'string') throw new HttpError(400, 'El campo nombre es obligatorio')
+  await validarNombreUnico(nombre)
   if (typeof precio !== 'number') throw new HttpError(400, 'El campo precio debe ser numérico')
   if (!esEnumValido(tipo, TIPOS_PRODUCTO)) throw new HttpError(400, 'tipo inválido')
 
@@ -90,45 +136,53 @@ export const crear = asyncHandler(async (req, res) => {
   }
 
   const usuarioId = resolverUsuario(req)
-  const creado = await prisma.$transaction(async (tx) => {
-    const nuevo = await tx.producto.create({
-      data: {
-        nombre,
-        precio,
-        tipo,
-        permiteMitadYMitad: tipo === 'Con_receta' ? (permiteMitadYMitad ?? false) : false,
-        disponibleHoy: disponibleHoy ?? true,
-      },
-    })
-    if (receta) {
-      await tx.producto_Ingrediente.createMany({
-        data: receta.map((r) => ({ productoId: nuevo.id, ingredienteId: r.ingredienteId, cantidad: r.cantidad })),
+  let creado
+  try {
+    creado = await prisma.$transaction(async (tx) => {
+      const nuevo = await tx.producto.create({
+        data: {
+          nombre,
+          precio,
+          tipo,
+          permiteMitadYMitad: tipo === 'Con_receta' ? (permiteMitadYMitad ?? false) : false,
+          disponibleHoy: disponibleHoy ?? true,
+        },
       })
-    }
-    // Reventa directa con stock inicial: la Entrada de inventario se genera
-    // automáticamente al crear el producto (igual que con los Ingredientes) y,
-    // si se capturó el costo, también el Gasto de esa compra.
-    if (tipo === 'Reventa_directa' && stockInicial != null) {
-      await tx.movimiento_Inventario.create({
-        data: { productoId: nuevo.id, tipoMovimiento: 'Entrada', cantidad: stockInicial },
-      })
-      if (costo != null) {
-        const dia = await tx.dia_Operativo.findFirst({ where: { estado: 'Abierto' } })
-        await tx.gasto.create({
-          data: {
-            concepto: `Entrada de inventario: ${nuevo.nombre}`,
-            monto: costo,
-            categoria: 'Insumos',
-            metodoPago: 'Efectivo',
-            origen: 'Automatico_por_entrada_inventario',
-            diaOperativoId: dia?.id ?? null,
-            usuarioId,
-          },
+      if (receta) {
+        await tx.producto_Ingrediente.createMany({
+          data: receta.map((r) => ({ productoId: nuevo.id, ingredienteId: r.ingredienteId, cantidad: r.cantidad })),
         })
       }
+      // Reventa directa con stock inicial: la Entrada de inventario se genera
+      // automáticamente al crear el producto (igual que con los Ingredientes) y,
+      // si se capturó el costo, también el Gasto de esa compra.
+      if (tipo === 'Reventa_directa' && stockInicial != null) {
+        await tx.movimiento_Inventario.create({
+          data: { productoId: nuevo.id, tipoMovimiento: 'Entrada', cantidad: stockInicial },
+        })
+        if (costo != null) {
+          const dia = await tx.dia_Operativo.findFirst({ where: { estado: 'Abierto' } })
+          await tx.gasto.create({
+            data: {
+              concepto: `Entrada de inventario: ${nuevo.nombre}`,
+              monto: costo,
+              categoria: 'Insumos',
+              metodoPago: 'Efectivo',
+              origen: 'Automatico_por_entrada_inventario',
+              diaOperativoId: dia?.id ?? null,
+              usuarioId,
+            },
+          })
+        }
+      }
+      return nuevo
+    })
+  } catch (e) {
+    if (e.code === 'P2002') {
+      throw new HttpError(400, `Ya existe un producto llamado "${nombre}". El nombre debe ser único.`)
     }
-    return nuevo
-  })
+    throw e
+  }
 
   res.status(201).json(await prisma.producto.findUnique({ where: { id: creado.id }, include: includeCompleto }))
 })
@@ -142,6 +196,7 @@ export const actualizar = asyncHandler(async (req, res) => {
   const data = {}
   if (nombre !== undefined) {
     if (typeof nombre !== 'string' || !nombre.trim()) throw new HttpError(400, 'nombre inválido')
+    if (nombre !== producto.nombre) await validarNombreUnico(nombre, producto.id)
     data.nombre = nombre
   }
   if (precio !== undefined) {
@@ -201,6 +256,10 @@ export const actualizarDisponibilidad = asyncHandler(async (req, res) => {
 
   const producto = await prisma.producto.findUnique({ where: { id: Number(id) } })
   if (!producto) throw new HttpError(404, 'Producto no encontrado')
+
+  if (disponibleHoy === true && producto.tipo === 'Con_receta') {
+    await validarRecetaActiva(producto.id)
+  }
 
   let aviso = null
   const actualizado = await prisma.$transaction(async (tx) => {
@@ -310,6 +369,9 @@ export const reactivar = asyncHandler(async (req, res) => {
   const producto = await prisma.producto.findUnique({ where: { id: Number(id) } })
   if (!producto) throw new HttpError(404, 'Producto no encontrado')
   if (producto.estado === 'Activo') throw new HttpError(400, 'El producto ya está activo')
+  if (producto.tipo === 'Con_receta') {
+    await validarRecetaActiva(producto.id)
+  }
 
   const resultado = await prisma.$transaction(async (tx) => {
     const actualizado = await tx.producto.update({
@@ -371,6 +433,8 @@ export const asociarModificador = asyncHandler(async (req, res) => {
   if (!producto) throw new HttpError(404, 'Producto no encontrado')
   const modificador = await prisma.modificador.findUnique({ where: { id: Number(modificadorId) } })
   if (!modificador) throw new HttpError(404, 'Modificador no encontrado')
+
+  await validarProductoParaModificador(producto.id, modificador.ingredienteAfectadoId)
 
   try {
     const relacion = await prisma.producto_Modificador.create({

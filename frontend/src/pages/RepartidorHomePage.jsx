@@ -325,25 +325,12 @@ function RepartidorHomePage() {
       </div>
 
       <div className="mx-auto max-w-7xl space-y-4 px-4 pt-6 sm:px-6 lg:px-8">
-        {(error || mensaje) && (
-          <div className="space-y-2">
-            {error && (
-              <p
-                role="alert"
-                className="rounded-2xl bg-danger/10 px-4 py-3 text-sm font-medium text-danger"
-              >
-                {error}
-              </p>
-            )}
-            {mensaje && (
-              <p className="rounded-2xl bg-green-500/10 px-4 py-3 text-sm font-medium text-green-700">
-                {mensaje}
-              </p>
-            )}
-          </div>
-        )}
-
-        <BannerToaster error={error} notificacion={mensaje} onCerrarError={() => setError('')} />
+        <BannerToaster
+          error={error}
+          notificacion={mensaje}
+          onCerrarError={() => setError('')}
+          onCerrarNotificacion={() => setMensaje('')}
+        />
 
         {pedidos === null ? (
           <div className="flex flex-col items-center justify-center gap-3 py-24 text-muted">

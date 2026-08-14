@@ -182,10 +182,81 @@ try {
   ok(devRestante.status === 201 && devRestante.data.movimientosRegreso === 1, 'devolución restante genera 1 movimiento (solo agua)')
   ok((await stockProducto(coca.id)) === 7 && (await stockProducto(agua.id)) === 10, 'agua regresada (9->10), coca sin cambios (7)')
 
+  console.log('== Devolución PARCIAL POR CANTIDAD (10 de 20, luego 15 rechazada) ==')
+  const papas = await prisma.producto.create({ data: { nombre: 'Papas', precio: 10, tipo: 'Reventa_directa' } })
+  await prisma.movimiento_Inventario.create({ data: { productoId: papas.id, tipoMovimiento: 'Entrada', cantidad: 100 } })
+  const v20 = await req('POST', '/api/ventas', {
+    productos: [{ productoId: papas.id, cantidad: 20 }],
+    metodoPago: 'Efectivo',
+    usuarioId: admin.id,
+  })
+  ok(v20.status === 201 && v20.data.venta.total === 200, 'venta de 20 unidades en una sola línea (200)')
+  ok((await stockProducto(papas.id)) === 80, 'papas 100 -> 80 tras la venta')
+  const vpPapas = v20.data.venta.productos[0]
+
+  const dev10 = await req('POST', '/api/devoluciones', {
+    ventaId: v20.data.venta.id,
+    ventaProductoIds: [vpPapas.id],
+    cantidades: { [vpPapas.id]: 10 },
+    monto: 100,
+    motivo: 'Cliente_insatisfecho',
+    medioDevolucion: 'Efectivo',
+    regresaAInventario: true,
+    usuarioId: admin.id,
+  })
+  ok(dev10.status === 201, 'devolver 10 de 20 -> 201')
+  ok(
+    dev10.data.devolucion.cantidadesVentaProducto &&
+      JSON.parse(dev10.data.devolucion.cantidadesVentaProducto)[vpPapas.id] === 10,
+    'la devolución guarda la cantidad parcial (10)',
+  )
+  ok(dev10.data.movimientosRegreso === 1, 'regreso proporcional genera 1 movimiento')
+  const mvDev10 = await prisma.movimiento_Inventario.findFirst({
+    where: { referenciaId: dev10.data.devolucion.id, tipoMovimiento: 'Devolucion_regreso' },
+  })
+  ok(mvDev10 && mvDev10.cantidad === 10, 'el regreso es proporcional (+10 de los 20, no +20)')
+  ok((await stockProducto(papas.id)) === 90, 'papas 80 -> 90 tras devolver 10')
+
+  const dev15 = await req('POST', '/api/devoluciones', {
+    ventaId: v20.data.venta.id,
+    ventaProductoIds: [vpPapas.id],
+    cantidades: { [vpPapas.id]: 15 },
+    monto: 150,
+    motivo: 'Otro',
+    medioDevolucion: 'Efectivo',
+    regresaAInventario: true,
+    usuarioId: admin.id,
+  })
+  ok(dev15.status === 400 && /Solo quedan 10/i.test(dev15.data.message || ''), 'devolver 15 cuando solo quedan 10 -> 400 (excede el remanente)')
+  ok((await stockProducto(papas.id)) === 90, 'papas se mantienen en 90 (el rechazo no regresa nada)')
+
+  const dev10mas = await req('POST', '/api/devoluciones', {
+    ventaId: v20.data.venta.id,
+    ventaProductoIds: [vpPapas.id],
+    cantidades: { [vpPapas.id]: 10 },
+    monto: 100,
+    motivo: 'Otro',
+    medioDevolucion: 'Efectivo',
+    regresaAInventario: true,
+    usuarioId: admin.id,
+  })
+  ok(dev10mas.status === 201 && dev10mas.data.movimientosRegreso === 1, 'devolver los 10 restantes -> 201 con su movimiento')
+  ok((await stockProducto(papas.id)) === 100, 'papas vuelven a 100 tras devolver las 20 (10+10)')
+
+  const repPapas = await req('GET', '/api/devoluciones')
+  const filasPapas = repPapas.data.filter((d) => d.ventaId === v20.data.venta.id)
+  ok(
+    filasPapas.length === 2 &&
+      filasPapas[0].productos[0].producto === 'Papas' && filasPapas[0].productos[0].cantidad === 10 &&
+      filasPapas[1].productos[0].producto === 'Papas' && filasPapas[1].productos[0].cantidad === 10,
+    'reporte devoluciones refleja la cantidad devuelta de cada registro (10 y 10)',
+  )
+
   console.log('== Cierre caja 2 ==')
-  // esperado = 50 + 25 (venta efectivo de 2 productos) = 75 (devoluciones con medio Efectivo/Tarjeta no restan)
-  const cerrar2 = await req('POST', '/api/caja/cerrar', { efectivoContado: 75, usuarioId: admin.id })
-  ok(cerrar2.status === 200 && cerrar2.data.cierre.efectivoEsperado === 75 && cerrar2.data.cierre.diferencia === 0, 'cierre 2: esperado 75, diferencia 0')
+  // esperado = 50 + 25 (venta de 2 productos) + 200 (venta de 20 papas) = 275
+  // (devoluciones con medio Efectivo/Tarjeta no restan del efectivo esperado)
+  const cerrar2 = await req('POST', '/api/caja/cerrar', { efectivoContado: 275, usuarioId: admin.id })
+  ok(cerrar2.status === 200 && cerrar2.data.cierre.efectivoEsperado === 275 && cerrar2.data.cierre.diferencia === 0, 'cierre 2: esperado 275, diferencia 0')
 
   const hist = await req('GET', '/api/caja/historial')
   ok(hist.status === 200 && hist.data.length === 2 && hist.data.every((d) => d.diferencia === 0), 'historial con 2 dias cerrados')
