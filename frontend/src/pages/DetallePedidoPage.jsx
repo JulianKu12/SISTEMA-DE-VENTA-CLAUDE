@@ -4,7 +4,8 @@ import Button from '../components/ui/Button'
 import ConfirmModal from '../components/ui/ConfirmModal'
 import BannerToaster from '../components/ui/BannerToaster'
 import { obtenerCombos, obtenerProductos } from '../services/catalogo'
-import { obtenerConfiguracion } from '../services/configuracion'
+import { useConfiguracion } from '../context/useConfiguracion'
+import { ModalCombo, ModalProducto } from './NuevoPedidoPage'
 import {
   obtenerPedido,
   cambiarEstadoPago,
@@ -159,10 +160,16 @@ function construirLineas(pedido) {
           nota: pp.notaCombo ?? '',
           filas: [],
           pedidoProductoIds: [],
+          productos: [],
         })
       }
       grupos.get(pp.comboId).filas.push(pp)
       grupos.get(pp.comboId).pedidoProductoIds.push(pp.id)
+      grupos.get(pp.comboId).productos.push({
+        productoId: pp.productoId,
+        nota: pp.nota ?? '',
+        modificadores: pp.modificadores || [],
+      })
     } else {
       const conMods = (pp.modificadores || []).reduce((acc, m) => acc + m.costoAplicado, 0)
       normales.push({
@@ -190,6 +197,38 @@ function construirLineas(pedido) {
     subtotal: (g.comboPrecioCongelado ?? 0) * (g.filas[0]?.cantidad || 0),
   }))
   return [...combos, ...normales]
+}
+
+// Convierte el ítem personalizado (modificadores con objeto completo, sabores
+// con {id}, etc.) al formato que espera el backend en agregarProductos, igual
+// al payload que construye NuevoPedidoPage al crear un pedido desde cero.
+function normalizarItemParaBackend(item) {
+  const normalizarModificador = (m) => ({
+    modificadorId: m.id ?? m.modificadorId,
+    costoAplicado: m.costoAdicional ?? m.costoAplicado ?? 0,
+  })
+  if (item.comboId) {
+    return {
+      comboId: item.comboId,
+      cantidad: item.cantidad,
+      nota: item.nota ?? '',
+      productos: (item.productos || []).map((p) => ({
+        productoId: p.productoId,
+        nota: p.nota ?? '',
+        modificadores: (p.modificadores || []).map(normalizarModificador),
+      })),
+    }
+  }
+  return {
+    productoId: item.productoId,
+    cantidad: item.cantidad,
+    esMitadYMitad: item.esMitadYMitad || false,
+    ...(item.esMitadYMitad && item.sabor1 && item.sabor2
+      ? { sabor1ProductoId: item.sabor1.id, sabor2ProductoId: item.sabor2.id }
+      : {}),
+    modificadores: (item.modificadores || []).map(normalizarModificador),
+    nota: item.nota ?? '',
+  }
 }
 
 function ModalRepartidor({ disponibles, onSeleccionar, onCancelar }) {
@@ -265,6 +304,8 @@ function ModalAgregar({ productos, combos, onAgregar, onCancelar }) {
   const [tipo, setTipo] = useState('producto')
   const [seleccionId, setSeleccionId] = useState(null)
   const [cantidad, setCantidad] = useState(1)
+  const [personalizandoProducto, setPersonalizandoProducto] = useState(null)
+  const [personalizandoCombo, setPersonalizandoCombo] = useState(null)
 
   useEffect(() => {
     const overflowAnterior = document.body.style.overflow
@@ -281,11 +322,16 @@ function ModalAgregar({ productos, combos, onAgregar, onCancelar }) {
 
   const opciones = tipo === 'producto' ? productos : combos
   const seleccionado = opciones?.find((o) => o.id === seleccionId)
+  const productosMitad = (productos || []).filter((p) => p.permiteMitadYMitad)
 
-  const confirmar = () => {
+  const finalizar = (config) => {
+    onAgregar({ ...config, cantidad })
+  }
+
+  const continuar = () => {
     if (!seleccionado) return
-    if (tipo === 'producto') onAgregar({ productoId: seleccionado.id, cantidad })
-    else onAgregar({ comboId: seleccionado.id, cantidad })
+    if (tipo === 'producto') setPersonalizandoProducto(seleccionado)
+    else setPersonalizandoCombo(seleccionado)
   }
 
   return (
@@ -373,17 +419,33 @@ function ModalAgregar({ productos, combos, onAgregar, onCancelar }) {
           <Button variant="secondary" size="md" className="flex-1" onClick={onCancelar}>
             Cancelar
           </Button>
-          <Button size="md" className="flex-1" disabled={!seleccionado} onClick={confirmar}>
-            Agregar
+          <Button size="md" className="flex-1" disabled={!seleccionado} onClick={continuar}>
+            Continuar
           </Button>
         </div>
       </div>
+
+      {personalizandoProducto && (
+        <ModalProducto
+          producto={personalizandoProducto}
+          productosMitad={productosMitad}
+          onCancelar={() => setPersonalizandoProducto(null)}
+          onAgregar={finalizar}
+        />
+      )}
+      {personalizandoCombo && (
+        <ModalCombo
+          combo={personalizandoCombo}
+          onCancelar={() => setPersonalizandoCombo(null)}
+          onAgregar={finalizar}
+        />
+      )}
     </div>
   )
 }
 
 function ModalActualizarMonto({ esDomicilio, montoActual, total, onConfirmar, onCancelar }) {
-  const [config, setConfig] = useState(null)
+  const { config } = useConfiguracion()
   const [modoOtro, setModoOtro] = useState(false)
   const [monto, setMonto] = useState(esDomicilio ? null : '')
   const [error, setError] = useState('')
@@ -396,16 +458,16 @@ function ModalActualizarMonto({ esDomicilio, montoActual, total, onConfirmar, on
       if (e.key === 'Escape') onCancelar()
     }
     window.addEventListener('keydown', cerrarConEsc)
-    obtenerConfiguracion()
-      .then((c) => setConfig(c))
-      .catch(() => setConfig({ opcionesCambio: [50, 100, 200, 500] }))
     return () => {
       document.body.style.overflow = overflowAnterior
       window.removeEventListener('keydown', cerrarConEsc)
     }
   }, [onCancelar])
 
-  const opcionesCambio = config?.opcionesCambio || []
+  const opcionesCambio =
+    Array.isArray(config?.opcionesCambio) && config.opcionesCambio.length > 0
+      ? config.opcionesCambio
+      : [50, 100, 200, 500]
   const opcionMasAlta = opcionesCambio.length > 0 ? Math.max(...opcionesCambio) : 0
   const opciones = opcionesCambio.filter((o) => o >= total)
   const permiteOtroDomicilio = esDomicilio && total > opcionMasAlta
@@ -920,6 +982,7 @@ function DetallePedidoPage() {
   const [confirmarCancelarAbierto, setConfirmarCancelarAbierto] = useState(false)
   const [regresoPendiente, setRegresoPendiente] = useState(null)
   const [pendienteMonto, setPendienteMonto] = useState(null)
+  const [pendienteStock, setPendienteStock] = useState(null)
   const [modalDevolucion, setModalDevolucion] = useState(null)
   const [ventaInfo, setVentaInfo] = useState(null)
 
@@ -1106,7 +1169,7 @@ function DetallePedidoPage() {
     }
   }
 
-  const ejecutarEdicion = async (operacion, montoReferenciaPago) => {
+  const ejecutarEdicion = async (operacion, montoReferenciaPago, usarDisponible = false) => {
     if (ocupado) return null
     setOcupado(true)
     setError('')
@@ -1115,15 +1178,21 @@ function DetallePedidoPage() {
     try {
       const res = await editarPedido(
         id,
-        montoReferenciaPago !== undefined ? { ...operacion, montoReferenciaPago } : operacion,
+        usarDisponible
+          ? { ...operacion, usarDisponible: true, ...(montoReferenciaPago !== undefined ? { montoReferenciaPago } : {}) }
+          : montoReferenciaPago !== undefined
+            ? { ...operacion, montoReferenciaPago }
+            : operacion,
       )
       if (res?.pedido) setPedido(res.pedido)
       setEdicionActiva(true)
       setNotificacion('Producto agregado y total recalculado')
       return res
     } catch (err) {
-      if (err.stockInsuficiente) setStockFaltante(err.stockInsuficiente)
-      else setError(err.message)
+      if (err.stockInsuficiente) {
+        setStockFaltante(err.stockInsuficiente)
+        setPendienteStock({ operacion, montoReferenciaPago })
+      } else setError(err.message)
       if (err.nuevoTotal != null) {
         setPendienteMonto({ operacion, nuevoTotal: err.nuevoTotal })
       }
@@ -1137,15 +1206,21 @@ function DetallePedidoPage() {
     const nuevo = item.tipoLinea
       ? item
       : item.comboId
-        ? { tipoLinea: 'combo', comboId: item.comboId, nota: '', cantidad: item.cantidad }
+        ? {
+            tipoLinea: 'combo',
+            comboId: item.comboId,
+            nota: item.nota ?? '',
+            productos: item.productos || [],
+            cantidad: item.cantidad,
+          }
         : {
             tipoLinea: 'producto',
             productoId: item.productoId,
-            esMitadYMitad: false,
-            sabor1: null,
-            sabor2: null,
-            modificadores: [],
-            nota: '',
+            esMitadYMitad: item.esMitadYMitad || false,
+            sabor1: item.sabor1 || null,
+            sabor2: item.sabor2 || null,
+            modificadores: item.modificadores || [],
+            nota: item.nota ?? '',
             cantidad: item.cantidad,
           }
     const coincidencia = lineas.find((l) => esMismaConfiguracion(l, nuevo))
@@ -1166,7 +1241,7 @@ function DetallePedidoPage() {
                   },
                 ],
         }
-      : { agregarProductos: [item] }
+      : { agregarProductos: [normalizarItemParaBackend(item)] }
     setModalAgregar(false)
     ejecutarEdicion(operacion)
   }
@@ -1310,6 +1385,18 @@ function DetallePedidoPage() {
                 {f.nombre}: requerido {f.requerido} · disponible {f.disponible}
               </p>
             ))}
+            {pendienteStock && (
+              <button
+                type="button"
+                className="mt-1 w-full rounded-xl bg-danger px-4 py-2 text-sm font-semibold text-white disabled:opacity-50"
+                disabled={ocupado}
+                onClick={() =>
+                  ejecutarEdicion(pendienteStock.operacion, pendienteStock.montoReferenciaPago, true)
+                }
+              >
+                {ocupado ? 'Enviando…' : 'Usar lo disponible'}
+              </button>
+            )}
           </div>
         )}
         {notificacion && (
@@ -1655,6 +1742,8 @@ function DetallePedidoPage() {
         }
         confirmarEtiqueta="Sí, regresar"
         cancelarEtiqueta="No regresar"
+        extraEtiqueta="Cancelar"
+        onExtra={() => setRegresoPendiente(null)}
         onConfirmar={() => resolverRegreso(true)}
         onCancelar={() => resolverRegreso(false)}
       />

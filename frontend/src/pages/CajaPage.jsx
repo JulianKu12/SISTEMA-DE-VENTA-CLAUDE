@@ -13,8 +13,9 @@ import {
   obtenerHistorialCaja,
   obtenerVentas,
 } from '../services/caja'
-import { obtenerProductos } from '../services/catalogo'
+import { obtenerCombos, obtenerProductos } from '../services/catalogo'
 import { listarDevoluciones } from '../services/reportes'
+import { ModalCombo, ModalProducto } from './NuevoPedidoPage'
 
 const CATEGORIAS_GASTO = ['Insumos', 'Servicios', 'Sueldos', 'Otro']
 const METODOS_PAGO = ['Efectivo', 'Tarjeta', 'Transferencia']
@@ -81,35 +82,104 @@ function formatearFecha(iso) {
   })
 }
 
+function formatearFechaCorte(iso) {
+  const d = new Date(iso)
+  return d.toLocaleDateString('es-MX', { day: '2-digit', month: '2-digit', year: 'numeric' })
+}
+
 function formatearDifDiferencia(dif) {
   if (dif > 0) return `Sobran ${formatearMonto(dif)}`
   if (dif < 0) return `Faltan ${formatearMonto(Math.abs(dif))}`
   return 'Cuadra exacto'
 }
 
-function ModalFormularioAbrir({ fondoInicial, productos, onCerrar, onGuardar }) {
+// Convierte el ítem personalizado (modificadores con objeto completo, sabores
+// con {id}, etc.) al formato que espera el backend en ventasPrevias/ejectarVenta,
+// idéntico al payload que construye NuevoPedidoPage al vender desde cero.
+function normalizarItemParaBackend(item) {
+  const normalizarModificador = (m) => ({
+    modificadorId: m.id ?? m.modificadorId,
+    costoAplicado: m.costoAdicional ?? m.costoAplicado ?? 0,
+  })
+  if (item.comboId) {
+    return {
+      comboId: item.comboId,
+      cantidad: item.cantidad,
+      nota: item.nota ?? '',
+      productos: (item.productos || []).map((p) => ({
+        productoId: p.productoId,
+        nota: p.nota ?? '',
+        modificadores: (p.modificadores || []).map(normalizarModificador),
+      })),
+    }
+  }
+  return {
+    productoId: item.productoId,
+    cantidad: item.cantidad,
+    esMitadYMitad: item.esMitadYMitad || false,
+    ...(item.esMitadYMitad && item.sabor1 && item.sabor2
+      ? { sabor1ProductoId: item.sabor1.id, sabor2ProductoId: item.sabor2.id }
+      : {}),
+    modificadores: (item.modificadores || []).map(normalizarModificador),
+    nota: item.nota ?? '',
+  }
+}
+
+// Resumen legible de la personalización de una fila (para mostrarlo junto al
+// botón "Personalizar" una vez configurado el producto/combo).
+function resumenPersonalizacion(config) {
+  if (!config) return ''
+  const partes = []
+  if (config.esMitadYMitad) partes.push('Mitad y mitad')
+  const mods = config.tipoLinea === 'combo'
+    ? (config.productos || []).flatMap((p) => p.modificadores || [])
+    : config.modificadores || []
+  if (mods.length) partes.push(`${mods.length} modificador${mods.length === 1 ? '' : 'es'}`)
+  if (config.nota) partes.push('con nota')
+  return partes.join(' · ')
+}
+
+function ModalFormularioAbrir({ fondoInicial, productos, combos, onCerrar, onGuardar }) {
   const [huboVentas, setHuboVentas] = useState(null)
-  const [filas, setFilas] = useState([{ productoId: '', cantidad: '1', metodoPago: 'Efectivo' }])
+  const [filas, setFilas] = useState([
+    { tipo: 'producto', productoId: '', comboId: '', cantidad: '1', metodoPago: 'Efectivo', personalizacion: null },
+  ])
+  const [personalizando, setPersonalizando] = useState(null)
   const [error, setError] = useState('')
   const [stockFaltante, setStockFaltante] = useState(null)
   const [enviando, setEnviando] = useState(false)
 
-  const ventasValidas = filas.filter((f) => f.productoId && f.cantidad !== '')
+  const productosMitad = (productos || []).filter((p) => p.permiteMitadYMitad)
+
+  const ventasValidas = filas.filter(
+    (f) => (f.tipo === 'combo' ? f.comboId : f.productoId) && f.cantidad !== '',
+  )
   const todasValidas =
     ventasValidas.length > 0 && ventasValidas.every((f) => Number.isInteger(Number(f.cantidad)) && Number(f.cantidad) >= 1)
 
-  const confirmar = async () => {
+  const actualizarFila = (idx, cambios) =>
+    setFilas((fs) => fs.map((f, i) => (i === idx ? { ...f, ...cambios } : f)))
+
+  const confirmar = async (usarDisponible = false) => {
     setError('')
     setStockFaltante(null)
     if (huboVentas && !todasValidas) {
-      setError('Indica un producto válido con cantidad entera mayor o igual a 1 en al menos una venta.')
+      setError('Indica un producto o combo válido con cantidad entera mayor o igual a 1 en al menos una venta.')
       return
     }
     const ventasPrevias = huboVentas
-      ? ventasValidas.map((f) => ({
-          productos: [{ productoId: Number(f.productoId), cantidad: Number(f.cantidad) }],
-          metodoPago: f.metodoPago,
-        }))
+      ? ventasValidas.map((f) => {
+          const base = f.personalizacion
+            ? { ...f.personalizacion, cantidad: Number(f.cantidad) }
+            : f.tipo === 'combo'
+              ? { comboId: Number(f.comboId), cantidad: Number(f.cantidad) }
+              : { productoId: Number(f.productoId), cantidad: Number(f.cantidad) }
+          return {
+            productos: [normalizarItemParaBackend(base)],
+            metodoPago: f.metodoPago,
+            ...(usarDisponible ? { usarDisponible: true } : {}),
+          }
+        })
       : []
     setEnviando(true)
     try {
@@ -144,6 +214,14 @@ function ModalFormularioAbrir({ fondoInicial, productos, onCerrar, onGuardar }) 
               {f.nombre}: requerido {f.requerido} · disponible {f.disponible}
             </p>
           ))}
+          <button
+            type="button"
+            className="mt-1 w-full rounded-xl bg-danger px-4 py-2 text-sm font-semibold text-white disabled:opacity-50"
+            disabled={enviando}
+            onClick={() => confirmar(true)}
+          >
+            {enviando ? 'Enviando…' : 'Usar lo disponible'}
+          </button>
         </div>
       )}
 
@@ -192,24 +270,55 @@ function ModalFormularioAbrir({ fondoInicial, productos, onCerrar, onGuardar }) 
           <div className="space-y-3">
             {filas.map((fila, idx) => (
               <div key={idx} className="space-y-2 rounded-2xl bg-surface p-4">
+                <div className="grid grid-cols-2 gap-1 rounded-full bg-input p-1">
+                  {[
+                    { id: 'producto', etiqueta: 'Producto' },
+                    { id: 'combo', etiqueta: 'Combo' },
+                  ].map((op) => {
+                    const activo = fila.tipo === op.id
+                    return (
+                      <button
+                        key={op.id}
+                        type="button"
+                        onClick={() =>
+                          actualizarFila(idx, {
+                            tipo: op.id,
+                            productoId: '',
+                            comboId: '',
+                            personalizacion: null,
+                          })
+                        }
+                        aria-pressed={activo}
+                        className={`rounded-full px-3 py-1.5 text-xs font-semibold transition ${
+                          activo ? 'bg-card text-accent shadow-card' : 'text-muted hover:text-ink'
+                        }`}
+                      >
+                        {op.etiqueta}
+                      </button>
+                    )
+                  })}
+                </div>
+
                 <div className="flex items-end gap-2">
                   <div className="min-w-0 flex-1">
                     <label className="mb-1 block text-xs font-semibold text-muted">
-                      Producto vendido
+                      {fila.tipo === 'producto' ? 'Producto vendido' : 'Combo vendido'}
                     </label>
                     <select
                       className={CLASE_INPUT}
-                      value={fila.productoId}
+                      value={fila.tipo === 'producto' ? fila.productoId : fila.comboId}
                       onChange={(e) =>
-                        setFilas((fs) =>
-                          fs.map((f, i) => (i === idx ? { ...f, productoId: e.target.value } : f)),
-                        )
+                        actualizarFila(idx, {
+                          [fila.tipo === 'producto' ? 'productoId' : 'comboId']: e.target.value,
+                          personalizacion: null,
+                        })
                       }
                     >
                       <option value="">Selecciona…</option>
-                      {productos.map((p) => (
-                        <option key={p.id} value={p.id}>
-                          {p.nombre}{' '}
+                      {(fila.tipo === 'producto' ? productos : combos || []).map((o) => (
+                        <option key={o.id} value={o.id}>
+                          {o.nombre} —{' '}
+                          {formatearMonto(fila.tipo === 'producto' ? o.precio : o.precioEspecial)}
                         </option>
                       ))}
                     </select>
@@ -223,11 +332,7 @@ function ModalFormularioAbrir({ fondoInicial, productos, onCerrar, onGuardar }) 
                       step="1"
                       inputMode="numeric"
                       value={fila.cantidad}
-                      onChange={(e) =>
-                        setFilas((fs) =>
-                          fs.map((f, i) => (i === idx ? { ...f, cantidad: e.target.value } : f)),
-                        )
-                      }
+                      onChange={(e) => actualizarFila(idx, { cantidad: e.target.value })}
                     />
                   </div>
                   {filas.length > 1 && (
@@ -259,11 +364,7 @@ function ModalFormularioAbrir({ fondoInicial, productos, onCerrar, onGuardar }) 
                   <select
                     className={CLASE_INPUT}
                     value={fila.metodoPago}
-                    onChange={(e) =>
-                      setFilas((fs) =>
-                        fs.map((f, i) => (i === idx ? { ...f, metodoPago: e.target.value } : f)),
-                      )
-                    }
+                    onChange={(e) => actualizarFila(idx, { metodoPago: e.target.value })}
                   >
                     {METODOS_PAGO.map((mp) => (
                       <option key={mp} value={mp}>
@@ -272,11 +373,32 @@ function ModalFormularioAbrir({ fondoInicial, productos, onCerrar, onGuardar }) 
                     ))}
                   </select>
                 </div>
+                <button
+                  type="button"
+                  disabled={
+                    !(fila.tipo === 'combo' ? fila.comboId : fila.productoId) || enviando
+                  }
+                  onClick={() => setPersonalizando({ idx, tipo: fila.tipo })}
+                  className={`inline-flex min-h-10 w-full select-none items-center justify-center gap-2 rounded-full px-4 py-2 text-sm font-semibold transition duration-150 ease-out active:scale-[0.97] disabled:opacity-40 ${
+                    fila.personalizacion
+                      ? 'bg-accent/10 text-accent'
+                      : 'bg-muted/10 text-ink'
+                  }`}
+                >
+                  {fila.personalizacion
+                    ? `Personalizado ✓ ${resumenPersonalizacion(fila.personalizacion)}`
+                    : 'Personalizar (modificadores, mitad y mitad, nota)'}
+                </button>
               </div>
             ))}
             <button
               type="button"
-              onClick={() => setFilas((fs) => [...fs, { productoId: '', cantidad: '1', metodoPago: 'Efectivo' }])}
+              onClick={() =>
+                setFilas((fs) => [
+                  ...fs,
+                  { tipo: 'producto', productoId: '', comboId: '', cantidad: '1', metodoPago: 'Efectivo', personalizacion: null },
+                ])
+              }
               className="inline-flex items-center gap-1.5 rounded-full bg-accent/10 px-4 py-2 text-sm font-semibold text-accent transition active:scale-[0.97]"
             >
               <IconoMas /> Agregar venta
@@ -287,6 +409,38 @@ function ModalFormularioAbrir({ fondoInicial, productos, onCerrar, onGuardar }) 
           </Button>
         </div>
       )}
+
+      {personalizando &&
+        (() => {
+          const fila = filas[personalizando.idx]
+          if (personalizando.tipo === 'producto') {
+            const producto = (productos || []).find((p) => p.id === Number(fila.productoId))
+            if (!producto) return null
+            return (
+              <ModalProducto
+                producto={producto}
+                productosMitad={productosMitad}
+                onCancelar={() => setPersonalizando(null)}
+                onAgregar={(config) => {
+                  actualizarFila(personalizando.idx, { personalizacion: config })
+                  setPersonalizando(null)
+                }}
+              />
+            )
+          }
+          const combo = (combos || []).find((c) => c.id === Number(fila.comboId))
+          if (!combo) return null
+          return (
+            <ModalCombo
+              combo={combo}
+              onCancelar={() => setPersonalizando(null)}
+              onAgregar={(config) => {
+                actualizarFila(personalizando.idx, { personalizacion: config })
+                setPersonalizando(null)
+              }}
+            />
+          )
+        })()}
     </ModalHoja>
   )
 }
@@ -595,6 +749,7 @@ function CajaPage({ pestanaInicial = 'caja' }) {
   const [gastos, setGastos] = useState(null)
   const [historial, setHistorial] = useState(null)
   const [productos, setProductos] = useState([])
+  const [combos, setCombos] = useState([])
   const [fondo, setFondo] = useState('')
   const [errorLista, setErrorLista] = useState('')
   const [notificacion, setNotificacion] = useState('')
@@ -629,6 +784,13 @@ function CajaPage({ pestanaInicial = 'caja' }) {
       })
       .catch(() => {
         // productos solo se usan para el selector de ventas previas a apertura
+      })
+    obtenerCombos()
+      .then((datos) => {
+        if (activo) setCombos(datos)
+      })
+      .catch(() => {
+        // combos solo se usan para el selector de ventas previas a apertura
       })
     return () => {
       activo = false
@@ -746,6 +908,29 @@ function CajaPage({ pestanaInicial = 'caja' }) {
   }
 
   const cargandoInicial = estado === null && !errorLista
+
+  // Gastos agrupados por dia_operativo (fecha del corte). Los gastos con
+  // diaOperativoId null (aún sin caja abierta) quedan en un grupo propio
+  // "pendiente de asociar". Se conserva el orden (más reciente primero).
+  const gruposGastos = (() => {
+    if (!gastos) return null
+    const grupos = []
+    const porDia = new Map()
+    for (const gasto of gastos) {
+      const key = gasto.diaOperativoId ?? 'sin-dia'
+      if (!porDia.has(key)) {
+        const grupo = {
+          diaOperativoId: gasto.diaOperativoId,
+          dia: gasto.diaOperativo ?? null,
+          gastos: [],
+        }
+        porDia.set(key, grupo)
+        grupos.push(grupo)
+      }
+      porDia.get(key).gastos.push(gasto)
+    }
+    return grupos
+  })()
 
   return (
     <main className="min-h-screen bg-surface pb-16">
@@ -973,31 +1158,44 @@ function CajaPage({ pestanaInicial = 'caja' }) {
                 <p className="text-sm text-muted">Aún no hay gastos registrados.</p>
               </div>
             ) : (
-              <div className="overflow-hidden rounded-3xl bg-card shadow-card">
-                <ul className="divide-y divide-muted/10">
-                  {gastos.map((gasto) => (
-                    <li key={gasto.id} className="px-5 py-4">
-                      <div className="flex flex-wrap items-center justify-between gap-2">
-                        <div className="min-w-0">
-                          <p className="truncate text-sm font-bold text-ink">{gasto.concepto}</p>
-                          <p className="mt-0.5 text-xs text-muted">
-                            {gasto.categoria} · {gasto.metodoPago} ·{' '}
-                            {formatearFecha(gasto.fechaHora)}
-                            {!gasto.diaOperativoId && (
-                              <span className="text-amber-600">
-                                {' '}
-                                · pendiente de asociar a la próxima caja
-                              </span>
-                            )}
-                          </p>
-                        </div>
-                        <span className="text-sm font-bold text-ink">
-                          {formatearMonto(gasto.monto)}
-                        </span>
-                      </div>
-                    </li>
-                  ))}
-                </ul>
+              <div className="space-y-4">
+                {gruposGastos.map((grupo) => (
+                  <div
+                    key={grupo.diaOperativoId ?? 'sin-dia'}
+                    className="overflow-hidden rounded-3xl bg-card shadow-card"
+                  >
+                    <div className="border-b border-muted/10 bg-surface/60 px-5 py-3">
+                      {grupo.dia ? (
+                        <p className="text-xs font-bold uppercase tracking-wide text-muted">
+                          Corte del {formatearFechaCorte(grupo.dia.fechaApertura)} ·{' '}
+                          {grupo.dia.estado}
+                        </p>
+                      ) : (
+                        <p className="text-xs font-bold uppercase tracking-wide text-amber-600">
+                          Pendiente de asociar a la próxima caja
+                        </p>
+                      )}
+                    </div>
+                    <ul className="divide-y divide-muted/10">
+                      {grupo.gastos.map((gasto) => (
+                        <li key={gasto.id} className="px-5 py-4">
+                          <div className="flex flex-wrap items-center justify-between gap-2">
+                            <div className="min-w-0">
+                              <p className="truncate text-sm font-bold text-ink">{gasto.concepto}</p>
+                              <p className="mt-0.5 text-xs text-muted">
+                                {gasto.categoria} · {gasto.metodoPago} ·{' '}
+                                {formatearFecha(gasto.fechaHora)}
+                              </p>
+                            </div>
+                            <span className="text-sm font-bold text-ink">
+                              {formatearMonto(gasto.monto)}
+                            </span>
+                          </div>
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                ))}
               </div>
             )}
           </section>
@@ -1008,6 +1206,7 @@ function CajaPage({ pestanaInicial = 'caja' }) {
         <ModalFormularioAbrir
           fondoInicial={modalAbrir.fondoInicial}
           productos={productos}
+          combos={combos}
           onCerrar={() => setModalAbrir(null)}
           onGuardar={guardarApertura}
         />

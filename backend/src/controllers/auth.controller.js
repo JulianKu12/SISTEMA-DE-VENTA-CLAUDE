@@ -28,6 +28,13 @@ export const login = asyncHandler(async (req, res) => {
     throw new HttpError(401, 'Credenciales inválidas')
   }
 
+  // Repartidor dado de baja: no se permite iniciar sesión. La validación va
+  // después de las credenciales para no filtrar el estado de la cuenta a
+  // intentos con contraseña incorrecta (docs/07).
+  if (cuenta.empleado?.estadoDisponibilidad === 'Inactivo') {
+    throw new HttpError(403, 'Tu cuenta está inactiva, contacta al administrador')
+  }
+
   const token = firmarToken({ usuarioId: cuenta.id, tipo: cuenta.tipo })
   await prisma.usuario.update({
     where: { id: cuenta.id },

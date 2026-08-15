@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom'
 import Button from '../components/ui/Button'
 import ModalHoja from '../components/ui/ModalHoja'
 import BannerToaster from '../components/ui/BannerToaster'
+import ConfiguracionGeneral from '../components/ConfiguracionGeneral'
 import {
   crearIngrediente,
   actualizarIngrediente,
@@ -1778,6 +1779,7 @@ function ConfiguracionMenuPage() {
   const enPestanaProductos = pestana === 'productos'
   const enPestanaModificadores = pestana === 'modificadores'
   const enPestanaCombos = pestana === 'combos'
+  const enPestanaGeneral = pestana === 'general'
 
   return (
     <main className="min-h-screen bg-surface pb-16">
@@ -1813,8 +1815,9 @@ function ConfiguracionMenuPage() {
           </div>
         )}
 
-        <div className="grid grid-cols-4 gap-1 rounded-full bg-input p-1">
+        <div className="grid grid-cols-5 gap-1 rounded-full bg-input p-1">
           {[
+            { id: 'general', etiqueta: 'General' },
             { id: 'ingredientes', etiqueta: 'Ingredientes' },
             { id: 'productos', etiqueta: 'Productos' },
             { id: 'modificadores', etiqueta: 'Modificadores' },
@@ -1834,6 +1837,13 @@ function ConfiguracionMenuPage() {
             )
           })}
         </div>
+
+        {enPestanaGeneral && (
+          <ConfiguracionGeneral
+            onNotificacion={setNotificacion}
+            onError={setErrorLista}
+          />
+        )}
 
         {errorLista && ingredientes === null && productos === null && modificadores === null && combos === null && (
           <div className="flex flex-col items-center gap-4 rounded-3xl bg-card px-6 py-12 text-center shadow-card">

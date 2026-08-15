@@ -11,23 +11,30 @@ function ConfirmModal({
   mensaje,
   confirmarEtiqueta = 'Confirmar',
   cancelarEtiqueta = 'Cancelar',
+  extraEtiqueta,
+  onExtra,
   variante = 'primary',
   onConfirmar,
   onCancelar,
 }) {
+  // Botón neutral opcional (extraEtiqueta/onExtra): cierra el modal sin ejecutar
+  // la acción. Cuando existe, Escape y el clic en el fondo también cierran sin
+  // ejecutar nada (comportamiento de "cancelar a secas").
+  const cerrar = onExtra || onCancelar
+
   useEffect(() => {
     if (!abierto) return
     const overflowAnterior = document.body.style.overflow
     document.body.style.overflow = 'hidden'
     const cerrarConEsc = (e) => {
-      if (e.key === 'Escape') onCancelar()
+      if (e.key === 'Escape') cerrar()
     }
     window.addEventListener('keydown', cerrarConEsc)
     return () => {
       document.body.style.overflow = overflowAnterior
       window.removeEventListener('keydown', cerrarConEsc)
     }
-  }, [abierto, onCancelar])
+  }, [abierto, cerrar])
 
   if (!abierto) return null
 
@@ -39,12 +46,21 @@ function ConfirmModal({
     >
       <div
         className="absolute inset-0 animate-[fade-in_200ms_ease-out] bg-ink/40 backdrop-blur-sm"
-        onClick={onCancelar}
+        onClick={cerrar}
       />
       <div className="relative w-full max-w-md animate-[sheet-up_280ms_ease-out] rounded-3xl bg-card p-6 shadow-card">
         <h2 className="text-lg font-bold text-ink">{titulo}</h2>
         {mensaje && <p className="mt-2 text-sm leading-relaxed text-muted">{mensaje}</p>}
         <div className="mt-6 flex gap-3">
+          {extraEtiqueta && (
+            <button
+              type="button"
+              onClick={cerrar}
+              className="inline-flex min-h-12 flex-1 select-none items-center justify-center gap-2 rounded-full bg-muted/10 px-5 py-3 text-base font-semibold text-ink transition duration-150 ease-out active:scale-[0.97] focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
+            >
+              {extraEtiqueta}
+            </button>
+          )}
           <button
             type="button"
             onClick={onCancelar}

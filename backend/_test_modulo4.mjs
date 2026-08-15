@@ -109,7 +109,7 @@ try {
 
   // D = retry usarDisponible: consume 3 (queda 0)
   const r4 = await req('POST', '/api/ventas', { ...mitadBody, usarDisponible: [harina.id] })
-  ok(r4.status === 201 && r4.data.venta.total === 50, 'mit y mil con usarDisponible -> 201 total 50')
+  ok(r4.status === 201 && r4.data.venta.total === 20, 'mit y mil con usarDisponible -> 201 total 20 (10 por unidad = round(10/2+10/2))')
   const stockHarina = await prisma.movimiento_Inventario.aggregate({ _sum: { cantidad: true }, where: { ingredienteId: harina.id } })
   ok(stockHarina._sum.cantidad === 0, 'harina queda en 0 (no negativo)')
 
@@ -119,6 +119,50 @@ try {
   ok(stockMasa._sum.cantidad === 97, 'masa intacta tras mitad y mitad (base no consume)')
   const masaMovsMitad = await prisma.movimiento_Inventario.findMany({ where: { ingredienteId: masa.id, referenciaId: r4.data.venta.id } })
   ok(masaMovsMitad.length === 0, 'producto base no genera movimiento en mitad y mitad')
+
+  console.log('== Precio mitad y mitad = suma de mitades de los sabores (redondeada) ==')
+  // Sabores con precios DISTINTOS: 45 y 40 -> (45+40)/2 = 42.5 -> 43.
+  const saborCarne = await prisma.producto.create({ data: { nombre: 'Torta de jamón', precio: 45, tipo: 'Con_receta' } })
+  await prisma.producto_Ingrediente.create({ data: { productoId: saborCarne.id, ingredienteId: harina.id, cantidad: 1 } })
+  const saborQueso = await prisma.producto.create({ data: { nombre: 'Torta de queso', precio: 40, tipo: 'Con_receta' } })
+  await prisma.producto_Ingrediente.create({ data: { productoId: saborQueso.id, ingredienteId: harina.id, cantidad: 1 } })
+  // El producto "base" tiene un precio fijo absurdo (999): si el flujo lo usara,
+  // el total no sería 43. Su receta vacía garantiza que NO consume inventario.
+  const baseMitad = await prisma.producto.create({
+    data: { nombre: 'Torta mitad', precio: 999, tipo: 'Con_receta', permiteMitadYMitad: true },
+  })
+  await prisma.movimiento_Inventario.create({ data: { ingredienteId: harina.id, tipoMovimiento: 'Entrada', cantidad: 2 } })
+
+  const vMitad = await req('POST', '/api/ventas', {
+    productos: [{
+      productoId: baseMitad.id, cantidad: 1, esMitadYMitad: true,
+      sabor1ProductoId: saborCarne.id, sabor2ProductoId: saborQueso.id,
+    }],
+    metodoPago: 'Efectivo',
+    usuarioId: admin.id,
+  })
+  ok(vMitad.status === 201 && vMitad.data.venta.total === 43, 'mitad y mitad = round(45/2 + 40/2) = 43 (NO el precio fijo 999 del base)')
+  const vpMitad = vMitad.data.venta.productos[0]
+  ok(vpMitad.precioCongelado === 43, 'Venta_Producto.precioCongelado congelado en 43')
+
+  // Cambiar después el precio de los sabores NO afecta la venta ya realizada.
+  await prisma.producto.update({ where: { id: saborCarne.id }, data: { precio: 100 } })
+  await prisma.producto.update({ where: { id: saborQueso.id }, data: { precio: 1 } })
+  const vpMitadDb = await prisma.venta_Producto.findUnique({ where: { id: vpMitad.id } })
+  ok(vpMitadDb.precioCongelado === 43, 'cambio posterior al precio de los sabores NO afecta la venta (sigue 43)')
+  ok(vMitad.data.venta.total === 43, 'total de la venta previa sigue congelado en 43')
+
+  // Nueva venta con los NUEVOS precios de los sabores: round(100/2 + 1/2) = 51.
+  await prisma.movimiento_Inventario.create({ data: { ingredienteId: harina.id, tipoMovimiento: 'Entrada', cantidad: 2 } })
+  const vMitad2 = await req('POST', '/api/ventas', {
+    productos: [{
+      productoId: baseMitad.id, cantidad: 1, esMitadYMitad: true,
+      sabor1ProductoId: saborCarne.id, sabor2ProductoId: saborQueso.id,
+    }],
+    metodoPago: 'Efectivo',
+    usuarioId: admin.id,
+  })
+  ok(vMitad2.status === 201 && vMitad2.data.venta.total === 51, 'nueva venta tras el cambio de precios recalcula con los nuevos (51)')
 
   // E = entrada 7 harina con costo -> gasto y stock 7
   const e1 = await req('POST', '/api/inventario/entrada', { ingredienteId: harina.id, cantidad: 7, costo: 30, usuarioId: admin.id })
@@ -318,6 +362,44 @@ try {
   ok(devCap.status === 201 && devCap.data.movimientosRegreso === 1, 'devolución parcial revierte 1 movimiento (el del parcial)')
   const stockCap1 = await prisma.movimiento_Inventario.aggregate({ _sum: { cantidad: true }, where: { ingredienteId: capHarina.id } })
   ok(stockCap1._sum.cantidad === 3, 'revierte EXACTO el parcial (3, no 4 de la receta ni 0) -> capHarina 3')
+
+  console.log('== e2e botón "Usar lo disponible" (409 -> reenvío con usarDisponible:true) ==')
+  // Simula el flujo del botón del frontend: la primera petición (como
+  // "Confirmar pedido") devuelve 409 con stockInsuficiente; el botón reenvía la
+  // MISMA petición con usarDisponible:true y la venta debe completarse.
+  const botHarina = await prisma.ingrediente.create({ data: { nombre: 'BotHarina', unidadMedida: 'kg', stockActual: 7, stockMinimoAlerta: 0 } })
+  await prisma.movimiento_Inventario.create({ data: { ingredienteId: botHarina.id, tipoMovimiento: 'Entrada', cantidad: 7 } })
+  const botTorta = await prisma.producto.create({ data: { nombre: 'BotTorta', precio: 10, tipo: 'Con_receta' } })
+  await prisma.producto_Ingrediente.create({ data: { productoId: botTorta.id, ingredienteId: botHarina.id, cantidad: 2 } })
+
+  const payloadBot = {
+    productos: [
+      { productoId: botTorta.id, cantidad: 3 },
+      { productoId: botTorta.id, cantidad: 2 },
+    ],
+    metodoPago: 'Efectivo',
+    usuarioId: admin.id,
+  }
+  const vBot409 = await req('POST', '/api/ventas', payloadBot)
+  ok(vBot409.status === 409, '1ª petición (confirmar pedido) -> 409 con stock insuficiente')
+  ok(
+    vBot409.data.stockInsuficiente?.length === 1 &&
+      vBot409.data.stockInsuficiente[0].tipo === 'ingrediente' &&
+      vBot409.data.stockInsuficiente[0].requerido === 10 &&
+      vBot409.data.stockInsuficiente[0].disponible === 7,
+    '409 trae stockInsuficiente (requerido 10, disponible 7)'
+  )
+
+  const vBotOk = await req('POST', '/api/ventas', { ...payloadBot, usarDisponible: true })
+  ok(vBotOk.status === 201 && vBotOk.data.venta.total === 50, '2ª petición con usarDisponible:true (botón) -> 201')
+  const stockBot0 = await prisma.movimiento_Inventario.aggregate({ _sum: { cantidad: true }, where: { ingredienteId: botHarina.id } })
+  ok(stockBot0._sum.cantidad === 0, 'stock queda en 0 (no negativo) tras "Usar lo disponible"')
+  const vpBot1 = vBotOk.data.venta.productos[0]
+  const vpBot2 = vBotOk.data.venta.productos[1]
+  const mvBot1 = await prisma.movimiento_Inventario.findFirst({ where: { ventaProductoId: vpBot1.id, tipoMovimiento: 'Salida_venta' } })
+  const mvBot2 = await prisma.movimiento_Inventario.findFirst({ where: { ventaProductoId: vpBot2.id, tipoMovimiento: 'Salida_venta' } })
+  ok(mvBot1 && mvBot1.cantidad === -4, 'capShares: fila de 3 unidades descuenta su fracción (4)')
+  ok(mvBot2 && mvBot2.cantidad === -3, 'capShares: fila de 2 unidades descuenta su fracción (3)')
 
   console.log('== es_venta_previa_apertura ignorada desde el body ==')
   const productoPrev = await prisma.producto.create({ data: { nombre: 'Prev', precio: 4, tipo: 'Reventa_directa' } })

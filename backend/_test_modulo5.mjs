@@ -263,6 +263,39 @@ try {
   const gastosDia1 = await req('GET', `/api/gastos?diaOperativoId=${abrir1.data.diaOperativo.id}`)
   ok(gastosDia1.status === 200 && gastosDia1.data.some((g) => g.id === g1.data.gasto.id), 'listar gastos filtrado por dia')
 
+  console.log('== Venta previa con modificador "Quitar" no descuenta el ingrediente ==')
+  const harinaQ = await prisma.ingrediente.create({
+    data: { nombre: 'Harina quitada', unidadMedida: 'kg', stockActual: 5, stockMinimoAlerta: 1 },
+  })
+  await prisma.movimiento_Inventario.create({ data: { ingredienteId: harinaQ.id, tipoMovimiento: 'Entrada', cantidad: 5 } })
+  const tortaQ = await prisma.producto.create({ data: { nombre: 'Torta sin harina', precio: 25, tipo: 'Con_receta' } })
+  await prisma.producto_Ingrediente.create({ data: { productoId: tortaQ.id, ingredienteId: harinaQ.id, cantidad: 2 } })
+  const modQuitar = await prisma.modificador.create({
+    data: { nombre: 'Quitar harina', tipo: 'Quitar', ingredienteAfectadoId: harinaQ.id },
+  })
+  await prisma.producto_Modificador.create({ data: { productoId: tortaQ.id, modificadorId: modQuitar.id } })
+
+  const abrirQuitar = await req('POST', '/api/caja/abrir', {
+    fondoInicial: 0,
+    usuarioId: admin.id,
+    ventasPrevias: [{
+      productos: [{ productoId: tortaQ.id, cantidad: 1, modificadores: [{ modificadorId: modQuitar.id }] }],
+      metodoPago: 'Efectivo',
+    }],
+  })
+  ok(abrirQuitar.status === 201 && abrirQuitar.data.ventasPreviasRegistradas.length === 1, 'abrir caja con venta previa con modificador Quitar -> 201')
+  const ventaQuitar = abrirQuitar.data.ventasPreviasRegistradas[0]
+  ok(ventaQuitar.esVentaPreviaApertura === true, 'la venta previa con modificador queda marcada como previa a apertura')
+  ok(ventaQuitar.productos[0].modificadores[0].modificador.nombre === 'Quitar harina', 'la venta previa registra el modificador Quitar')
+  const stockHarinaQ = await prisma.movimiento_Inventario.aggregate({ _sum: { cantidad: true }, where: { ingredienteId: harinaQ.id } })
+  ok(stockHarinaQ._sum.cantidad === 5, 'el ingrediente afectado por Quitar NO se descuenta (sigue en 5)')
+  const movQuitar = await prisma.movimiento_Inventario.findMany({
+    where: { ingredienteId: harinaQ.id, tipoMovimiento: 'Salida_venta', referenciaId: ventaQuitar.id },
+  })
+  ok(movQuitar.length === 0, 'no existe movimiento Salida_venta del ingrediente quitado')
+  const cerrarQuitar = await req('POST', '/api/caja/cerrar', { efectivoContado: 0, usuarioId: admin.id })
+  ok(cerrarQuitar.status === 200 && cerrarQuitar.data.cierre.diferencia === 0, 'cierre de la caja con venta previa Quitar (esperado 0)')
+
   console.log(`\nResultado: ${fallas === 0 ? 'TODAS LAS PRUEBAS PASARON' : fallas + ' prueba(s) fallaron'}`)
 } catch (e) {
   console.error('ERROR EN PRUEBA:', e)
@@ -277,6 +310,11 @@ try {
     await tx.movimiento_Inventario.deleteMany()
     await tx.gasto.deleteMany()
     await tx.dia_Operativo.deleteMany()
+    await tx.combo_Producto.deleteMany()
+    await tx.combo.deleteMany()
+    await tx.producto_Modificador.deleteMany()
+    await tx.modificador.deleteMany()
+    await tx.producto_Ingrediente.deleteMany()
     await tx.producto.deleteMany()
     await tx.ingrediente.deleteMany()
     await tx.usuario.deleteMany()

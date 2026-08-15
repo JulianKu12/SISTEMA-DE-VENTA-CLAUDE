@@ -89,6 +89,17 @@ try {
   const loginRep2 = await login('luis7', 'luis7pass')
   const tokenRep2 = loginRep2.token
 
+  console.log('== Repartidor inactivo bloqueado al iniciar sesión ==')
+  const rInac = await req('POST', '/api/empleados', { nombre: 'Dario7', usuario: 'dario7', contraseña: 'dario7pass' }, tokenAdmin)
+  ok(rInac.status === 201, 'alta repartidor para la prueba de inactivo')
+  const inac = await req('PATCH', `/api/empleados/${rInac.data.id}`, { estadoDisponibilidad: 'Inactivo' }, tokenAdmin)
+  ok(inac.status === 200 && inac.data.estadoDisponibilidad === 'Inactivo', 'repartidor marcado como Inactivo')
+  const loginInac = await login('dario7', 'dario7pass')
+  ok(loginInac.status === 403, 'login de repartidor Inactivo -> 403')
+  ok(/inactiva/i.test(loginInac.data?.message || ''), 'mensaje de error claro: cuenta inactiva')
+  const loginInacMala = await login('dario7', 'contraseña-incorrecta')
+  ok(loginInacMala.status === 401, 'repartidor Inactivo con contraseña incorrecta -> 401 (no filtra estado)')
+
   console.log('== Repartidor bloqueado en endpoints de Administrador ==')
   const bloqueoIngredientes = await req('GET', '/api/ingredientes', undefined, tokenRep)
   ok(bloqueoIngredientes.status === 403, 'repartidor -> GET ingredientes 403')

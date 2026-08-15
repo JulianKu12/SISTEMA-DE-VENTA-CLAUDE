@@ -4,7 +4,7 @@ import Button from '../components/ui/Button'
 import { obtenerCombos, obtenerProductos } from '../services/catalogo'
 import { crearPedido } from '../services/pedidos'
 import { crearCliente, crearReferencia, listarClientes } from '../services/clientes'
-import { obtenerConfiguracion } from '../services/configuracion'
+import { useConfiguracion } from '../context/useConfiguracion'
 import { agregarLinea } from '../utils/ticket'
 import BannerToaster from '../components/ui/BannerToaster'
 
@@ -147,7 +147,7 @@ function FilaModificador({ marcado, onToggle, etiqueta, costo, tono }) {
   )
 }
 
-function ModalProducto({ producto, productosMitad, onCancelar, onAgregar }) {
+export function ModalProducto({ producto, productosMitad, onCancelar, onAgregar }) {
   const [modo, setModo] = useState('completo')
   const [sabor1, setSabor1] = useState(producto.id)
   const [sabor2, setSabor2] = useState(null)
@@ -174,7 +174,19 @@ function ModalProducto({ producto, productosMitad, onCancelar, onAgregar }) {
   const costoExtra = modificadores
     .filter((m) => seleccion[m.id])
     .reduce((acc, m) => acc + (m.costoAdicional || 0), 0)
-  const precioTotal = producto.precio + costoExtra
+
+  // Precio de un producto mitad y mitad: suma de la mitad del precio de cada
+  // sabor, redondeada al peso entero más cercano. El precio fijo del producto
+  // "base" (permiteMitadYMitad=true) NUNCA aplica en este modo.
+  const saborObj1 = sabor1 != null ? productosMitad.find((p) => p.id === sabor1) : null
+  const saborObj2 = sabor2 != null ? productosMitad.find((p) => p.id === sabor2) : null
+  const precioMitadCalculado =
+    modo === 'mitad' && saborObj1 && saborObj2
+      ? Math.round((saborObj1.precio + saborObj2.precio) / 2)
+      : null
+
+  const precioBase = modo === 'mitad' ? precioMitadCalculado ?? producto.precio : producto.precio
+  const precioTotal = precioBase + costoExtra
 
   const mitadyMitadValido = modo === 'completo' || (sabor1 && sabor2)
 
@@ -199,7 +211,7 @@ function ModalProducto({ producto, productosMitad, onCancelar, onAgregar }) {
     onAgregar({
       productoId: producto.id,
       nombre: producto.nombre,
-      precio: producto.precio,
+      precio: modo === 'mitad' ? (precioMitadCalculado ?? producto.precio) : producto.precio,
       esMitadYMitad: modo === 'mitad',
       sabor1: modo === 'mitad' ? productosMitad.find((p) => p.id === sabor1) || null : null,
       sabor2: modo === 'mitad' ? productosMitad.find((p) => p.id === sabor2) || null : null,
@@ -220,7 +232,11 @@ function ModalProducto({ producto, productosMitad, onCancelar, onAgregar }) {
           <div className="flex items-start justify-between gap-4">
             <div className="min-w-0">
               <h2 className="text-xl font-bold text-ink">{producto.nombre}</h2>
-              <p className="text-sm text-muted">{formatearMonto(producto.precio)}</p>
+              <p className="text-sm text-muted">
+                {modo === 'mitad' && precioMitadCalculado != null
+                  ? `${formatearMonto(saborObj1.precio)} + ${formatearMonto(saborObj2.precio)} → ${formatearMonto(precioMitadCalculado)}`
+                  : formatearMonto(producto.precio)}
+              </p>
             </div>
             <button
               type="button"
@@ -298,6 +314,13 @@ function ModalProducto({ producto, productosMitad, onCancelar, onAgregar }) {
                     </select>
                   </label>
                 </div>
+              )}
+              {modo === 'mitad' && (
+                <p className="mt-3 rounded-2xl bg-accent/10 px-4 py-2.5 text-sm font-semibold text-accent">
+                  {precioMitadCalculado != null
+                    ? `${saborObj1.nombre} ${formatearMonto(saborObj1.precio)} + ${saborObj2.nombre} ${formatearMonto(saborObj2.precio)} → mitad de cada uno = ${formatearMonto((saborObj1.precio + saborObj2.precio) / 2)}, redondeado a ${formatearMonto(precioMitadCalculado)}`
+                    : 'Elige los 2 sabores para calcular el precio.'}
+                </p>
               )}
             </section>
           )}
@@ -386,7 +409,7 @@ function ModalProducto({ producto, productosMitad, onCancelar, onAgregar }) {
   )
 }
 
-function ModalCombo({ combo, onCancelar, onAgregar }) {
+export function ModalCombo({ combo, onCancelar, onAgregar }) {
   const [seleccion, setSeleccion] = useState({})
   const [notas, setNotas] = useState({})
   const [notaCombo, setNotaCombo] = useState('')
@@ -588,6 +611,12 @@ function ModalCombo({ combo, onCancelar, onAgregar }) {
 
 function NuevoPedidoPage() {
   const navigate = useNavigate()
+  const { config } = useConfiguracion()
+  const costoEnvio = config?.costoEnvio ?? 0
+  const opcionesCambio =
+    Array.isArray(config?.opcionesCambio) && config.opcionesCambio.length > 0
+      ? config.opcionesCambio
+      : OPCIONES_CAMBIO_DEFECTO
   const [tipo, setTipo] = useState(null)
   const [origen, setOrigen] = useState('Mostrador')
   const [productos, setProductos] = useState(null)
@@ -608,8 +637,6 @@ function NuevoPedidoPage() {
   const [referenciaId, setReferenciaId] = useState(null)
   const [mostrarNuevaReferencia, setMostrarNuevaReferencia] = useState(false)
   const [nuevaReferencia, setNuevaReferencia] = useState('')
-  const [costoEnvio, setCostoEnvio] = useState(0)
-  const [opcionesCambio, setOpcionesCambio] = useState(OPCIONES_CAMBIO_DEFECTO)
   const [noCobrar, setNoCobrar] = useState(false)
   const [metodoPago, setMetodoPago] = useState('Efectivo')
   const [montoCambio, setMontoCambio] = useState(null)
@@ -646,18 +673,11 @@ function NuevoPedidoPage() {
     let activo = true
     ;(async () => {
       try {
-        const [datosClientes, config] = await Promise.all([
-          listarClientes(),
-          obtenerConfiguracion(),
-        ])
+        const datosClientes = await listarClientes()
         if (!activo) return
         setClientes(datosClientes)
-        setCostoEnvio(config.costoEnvio ?? 0)
-        if (Array.isArray(config.opcionesCambio) && config.opcionesCambio.length > 0) {
-          setOpcionesCambio(config.opcionesCambio)
-        }
       } catch {
-        // clientes y configuración son opcionales: se puede capturar el pedido sin ellos
+        // clientes son opcionales: se puede capturar el pedido sin ellos
       }
     })()
     return () => {
@@ -769,6 +789,7 @@ function NuevoPedidoPage() {
 
   const quitarLinea = (key) => {
     setTicket((t) => t.filter((item) => item.key !== key))
+    if (stockFaltante?.length > 0) setStockFaltante(null)
   }
 
   const subtotalDe = (item) => {
@@ -840,7 +861,7 @@ function NuevoPedidoPage() {
     }
   }
 
-  const confirmarPedido = async () => {
+  const confirmarPedido = async (usarDisponible = false) => {
     setErrorConfirmacion('')
     setStockFaltante(null)
     if (ticket.length === 0 || !tipo) return
@@ -921,6 +942,7 @@ function NuevoPedidoPage() {
         : {}),
       metodoPago,
       ...(requiereMonto ? { montoReferenciaPago: montoEfectivo } : {}),
+      ...(usarDisponible ? { usarDisponible: true } : {}),
     }
 
     setEnviando(true)
@@ -1596,6 +1618,14 @@ function NuevoPedidoPage() {
                             {f.nombre}: requerido {f.requerido} · disponible {f.disponible}
                           </p>
                         ))}
+                        <button
+                          type="button"
+                          className="mt-1 w-full rounded-xl bg-danger px-4 py-2 text-sm font-semibold text-white disabled:opacity-50"
+                          disabled={enviando}
+                          onClick={() => confirmarPedido(true)}
+                        >
+                          {enviando ? 'Enviando…' : 'Usar lo disponible'}
+                        </button>
                       </div>
                     )}
                     <Button

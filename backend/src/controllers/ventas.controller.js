@@ -257,7 +257,11 @@ export async function procesarItem(tx, item, opciones = {}) {
   const esMitad = item.esMitadYMitad === true
   const nota = typeof item.nota === 'string' ? item.nota.trim() : ''
 
-  const precioCongelado = item.precioCongelado ?? producto.precio
+  // Precio base congelado: el enviado explícitamente (p. ej. al generar la
+  // Venta desde un Pedido con precios ya congelados) o el precio del producto.
+  // Para mitad y mitad este valor se sobreescribe con la suma de las mitades
+  // de los sabores elegidos (ver abajo), NUNCA con el precio del producto base.
+  let precioCongelado = item.precioCongelado ?? producto.precio
 
   // Modificadores pedidos (solo aplican a productos con receta).
   const modificadoresDetallados = []
@@ -339,6 +343,13 @@ export async function procesarItem(tx, item, opciones = {}) {
           throw new HttpError(400, `El sabor "${s.nombre}" no está disponible hoy`)
         }
       }
+    }
+
+    // Precio del producto mitad y mitad (docs/03): suma de la mitad del precio
+    // de cada sabor, redondeada al peso entero más cercano. El precio fijo del
+    // producto "base" (permiteMitadYMitad=true) NUNCA aplica aquí.
+    if (item.precioCongelado == null) {
+      precioCongelado = Math.round((sabor1.precio + sabor2.precio) / 2)
     }
 
     // La receta se divide al 50% con REDONDEO HACIA ARRIBA (docs/03 y docs/04).
