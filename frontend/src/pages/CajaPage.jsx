@@ -99,7 +99,6 @@ function formatearDifDiferencia(dif) {
 function normalizarItemParaBackend(item) {
   const normalizarModificador = (m) => ({
     modificadorId: m.id ?? m.modificadorId,
-    costoAplicado: m.costoAdicional ?? m.costoAplicado ?? 0,
   })
   if (item.comboId) {
     return {

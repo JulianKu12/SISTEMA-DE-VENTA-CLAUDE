@@ -99,6 +99,25 @@ function IconoCheck() {
   )
 }
 
+function IconoAlerta() {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2.25"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      className="h-8 w-8"
+      aria-hidden="true"
+    >
+      <path d="M12 8.5v5" />
+      <path d="M12 16.5h.01" />
+      <path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0Z" />
+    </svg>
+  )
+}
+
 function Interruptor({ activo, onChange, ariaLabel }) {
   return (
     <button
@@ -662,6 +681,7 @@ function NuevoPedidoPage() {
   const [errorCliente, setErrorCliente] = useState('')
   const [errorReferencia, setErrorReferencia] = useState('')
   const [pedidoCreado, setPedidoCreado] = useState(null)
+  const [alertaPrecio, setAlertaPrecio] = useState(null)
 
   const cargarCatalogo = useCallback(async () => {
     setError('')
@@ -932,7 +952,6 @@ function NuevoPedidoPage() {
               nota: p.nota,
               modificadores: p.modificadores.map((m) => ({
                 modificadorId: m.id,
-                costoAplicado: m.costoAdicional || 0,
               })),
             })),
           }
@@ -945,7 +964,6 @@ function NuevoPedidoPage() {
               : {}),
             modificadores: item.modificadores.map((m) => ({
               modificadorId: m.id,
-              costoAplicado: m.costoAdicional || 0,
             })),
             nota: item.nota,
           },
@@ -973,7 +991,11 @@ function NuevoPedidoPage() {
     setEnviando(true)
     try {
       const pedido = await crearPedido(payload)
-      setPedidoCreado(pedido)
+      if (Math.round(pedido.total * 100) !== Math.round(totalConEnvio * 100)) {
+        setAlertaPrecio({ esperado: totalConEnvio, real: pedido.total, pedido })
+      } else {
+        setPedidoCreado(pedido)
+      }
     } catch (err) {
       if (err.stockInsuficiente) setStockFaltante(err.stockInsuficiente)
       else setErrorConfirmacion(err.message)
@@ -1686,6 +1708,39 @@ function NuevoPedidoPage() {
           onCancelar={() => setModalCombo(null)}
           onAgregar={manejarAgregarCombo}
         />
+      )}
+
+      {alertaPrecio && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center"
+          role="dialog"
+          aria-modal="true"
+        >
+          <div className="absolute inset-0 animate-[fade-in_200ms_ease-out] bg-ink/40 backdrop-blur-sm" />
+          <div className="relative mx-4 w-full max-w-md animate-[sheet-up_280ms_ease-out] rounded-3xl bg-card p-8 text-center shadow-card">
+            <div className="mx-auto mb-4 flex h-16 w-16 items-center justify-center rounded-full bg-danger/10 text-danger">
+              <IconoAlerta />
+            </div>
+            <h2 className="text-xl font-bold text-ink">El precio cambió mientras armabas el pedido</h2>
+            <p className="mt-3 text-sm leading-relaxed text-muted">
+              El total real es{' '}
+              <span className="font-semibold text-ink">{formatearMonto(alertaPrecio.real)}</span>, no{' '}
+              <span className="font-semibold text-danger">{formatearMonto(alertaPrecio.esperado)}</span>{' '}
+              que se mostró en pantalla. Revisa antes de continuar.
+            </p>
+            <div className="mt-6">
+              <Button
+                className="w-full"
+                onClick={() => {
+                  setPedidoCreado(alertaPrecio.pedido)
+                  setAlertaPrecio(null)
+                }}
+              >
+                Entendido, ver el pedido
+              </Button>
+            </div>
+          </div>
+        </div>
       )}
 
       {pedidoCreado && (

@@ -292,13 +292,15 @@ try {
     'opcionesPrecio: precio real (productos disponibles) y precio especial'
   )
 
-  // "Otro precio" manual: precioCongelado en el ítem del combo.
+  // Seguridad: un `precioCongelado` enviado por el cliente SIEMPRE se ignora
+  // (el precio se calcula solo desde la BD). Antes existía el "otro precio"
+  // manual; ya no: el combo se cobra a su precio especial (30).
   const vComboOtro = await req('POST', '/api/ventas', {
     productos: [{ comboId: combo.id, cantidad: 1, precioCongelado: 45 }],
     metodoPago: 'Efectivo',
     usuarioId: admin.id,
   })
-  ok(vComboOtro.status === 201 && vComboOtro.data.venta.total === 45, 'combo con "otro precio" manual (45)')
+  ok(vComboOtro.status === 201 && vComboOtro.data.venta.total === 30, 'combo: precioCongelado:45 del body IGNORADO -> se cobra precio especial 30')
 
   // Forzar venta de combo con usar_disponible (descuenta solo lo disponible).
   const comboBig = await prisma.combo.create({ data: { nombre: 'Combo Grande', precioEspecial: 100 } })
@@ -616,6 +618,62 @@ try {
   })
   ok(clickUsar.status === 201 && clickUsar.data.estadoPago === 'Pagado', '"Usar lo disponible" (usarDisponible:true) -> 201, vende solo lo que hay')
   ok((await stockProducto(prodReg.id)) === 0, 'descuento topeado a lo disponible: stock 0 (NUNCA negativo)')
+
+  console.log('== SEGURIDAD: precios manipulados en el body SIEMPRE se ignoran ==')
+  const estSec4 = await req('GET', '/api/caja/estado')
+  if (estSec4.data?.abierta) {
+    await req('POST', '/api/caja/cerrar', { efectivoContado: 0, usuarioId: admin.id })
+  }
+  const abrirSec4 = await req('POST', '/api/caja/abrir', { fondoInicial: 0, usuarioId: admin.id })
+  ok(abrirSec4.status === 201, 'abrir caja fresca para las pruebas de precio manipulado')
+
+  const secIng4 = await prisma.ingrediente.create({ data: { nombre: 'SecIng4', unidadMedida: 'kg', stockActual: 100, stockMinimoAlerta: 0 } })
+  await prisma.movimiento_Inventario.create({ data: { ingredienteId: secIng4.id, tipoMovimiento: 'Entrada', cantidad: 100 } })
+  const secProd4 = await prisma.producto.create({ data: { nombre: 'SecProd4', precio: 15, tipo: 'Con_receta' } })
+  await prisma.producto_Ingrediente.create({ data: { productoId: secProd4.id, ingredienteId: secIng4.id, cantidad: 1 } })
+  const secMod4 = await prisma.modificador.create({
+    data: { nombre: 'SecMod4', tipo: 'Agregar', ingredienteAfectadoId: secIng4.id, cantidadExtra: 1, costoAdicional: 3 },
+  })
+  await prisma.producto_Modificador.create({ data: { productoId: secProd4.id, modificadorId: secMod4.id } })
+  const secCombo4 = await prisma.combo.create({ data: { nombre: 'SecCombo4', precioEspecial: 30 } })
+  await prisma.combo_Producto.create({ data: { comboId: secCombo4.id, productoId: secProd4.id, cantidad: 1 } })
+
+  const vSec4 = await req('POST', '/api/ventas', {
+    productos: [{ productoId: secProd4.id, cantidad: 1, precioCongelado: 0.01 }],
+    metodoPago: 'Efectivo', usuarioId: admin.id,
+  })
+  ok(vSec4.status === 201 && vSec4.data.venta.total === 15 && vSec4.data.venta.productos[0].precioCongelado === 15,
+    'venta directa IGNORA precioCongelado:0.01 -> cobra 15 (precio de la BD)')
+
+  const vSec4Mod = await req('POST', '/api/ventas', {
+    productos: [{ productoId: secProd4.id, cantidad: 1, modificadores: [{ modificadorId: secMod4.id, costoAplicado: 0.01 }] }],
+    metodoPago: 'Efectivo', usuarioId: admin.id,
+  })
+  ok(vSec4Mod.status === 201 && vSec4Mod.data.venta.total === 18, 'costoAplicado:0.01 IGNORADO -> costo real 3 (total 18)')
+
+  const vSec4Combo = await req('POST', '/api/ventas', {
+    productos: [{ comboId: secCombo4.id, cantidad: 1, precioCongelado: 0.01 }],
+    metodoPago: 'Efectivo', usuarioId: admin.id,
+  })
+  ok(vSec4Combo.status === 201 && vSec4Combo.data.venta.total === 30, 'combo IGNORA precioCongelado:0.01 -> cobra precio especial 30')
+
+  const pSec4 = await req('POST', '/api/pedidos', {
+    tipo: 'Para_recoger', origen: 'Telefono', nombreClienteLibre: 'SecPedido4',
+    productos: [{ productoId: secProd4.id, cantidad: 1, precioCongelado: 0.01 }],
+    metodoPago: 'Efectivo', montoReferenciaPago: 100, usuarioId: admin.id,
+  })
+  ok(pSec4.status === 201 && pSec4.data.total === 15, 'pedido IGNORA precioCongelado:0.01 al crearse -> total real 15')
+
+  await prisma.producto.update({ where: { id: secProd4.id }, data: { precio: 999 } })
+  const pagoSec4 = await req('PATCH', `/api/pedidos/${pSec4.data.id}/estado-pago`, { estadoPago: 'Pagado', precioCongelado: 0.01, usuarioId: admin.id })
+  ok(pagoSec4.status === 200 && pagoSec4.data.venta.total === 15,
+    'pago de pedido IGNORA precioCongelado:0.01 -> venta respeta el precio CONGELADO en BD (15, no 999)')
+
+  const vSec4Nuevo = await req('POST', '/api/ventas', {
+    productos: [{ productoId: secProd4.id, cantidad: 1, precioCongelado: 0.01 }],
+    metodoPago: 'Efectivo', usuarioId: admin.id,
+  })
+  ok(vSec4Nuevo.status === 201 && vSec4Nuevo.data.venta.total === 999, 'precio SIEMPRE desde BD: tras subirlo a 999, la nueva venta cobra 999 (no 0.01)')
 
   console.log(`\nResultado: ${fallas === 0 ? 'TODAS LAS PRUEBAS PASARON' : fallas + ' prueba(s) fallaron'}`)
 } catch (e) {

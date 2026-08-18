@@ -118,14 +118,18 @@ async function procesarCombo(tx, item, opciones = {}) {
   const cantidad = Number(item.cantidad)
   validarCantidad(cantidad)
 
-  // Precio por unidad del combo: "otro precio" manual (precioCongelado) o el
-  // precio_especial del combo (docs/03). Los modificadores tipo "Agregar"
-  // SUMAN su costo_adicional al precio final del combo (igual que en productos
-  // individuales); Quitar y Sustituir NO cambian el precio. El recargo solo
-  // aplica cuando el precio se calcula en este momento (precioCongelado == null):
-  // si viene congelado (p. ej. al generar la Venta desde un Pedido ya creado)
-  // el recargo ya quedó incluido al congelar el precio.
-  const comboPrecioCongelado = item.precioCongelado ?? combo.precioEspecial
+  // Precio por unidad del combo: SIEMPRE el precio_especial del combo
+  // (docs/03), NUNCA un `precioCongelado` enviado por el cliente (seguridad:
+  // los precios se calculan solo desde la BD). La única excepción es
+  // `opciones.confiarCongelado = true`, que solo usan flujos internos con
+  // precios ya congelados en la BD (p. ej. cobrar un Pedido capturado antes).
+  // Los modificadores tipo "Agregar" SUMAN su costo_adicional al precio final
+  // del combo (igual que en productos individuales); Quitar y Sustituir NO
+  // cambian el precio. El recargo solo aplica cuando el precio se calcula en
+  // este momento: si viene congelado (confiarCongelado) el recargo ya quedó
+  // incluido al congelar el precio.
+  const comboPrecioCongelado =
+    opciones.confiarCongelado && item.precioCongelado != null ? item.precioCongelado : combo.precioEspecial
   let recargoModificadoresAgregar = 0
   const notaCombo = typeof item.nota === 'string' ? item.nota.trim() : ''
 
@@ -180,7 +184,7 @@ async function procesarCombo(tx, item, opciones = {}) {
             `El modificador "${mod.nombre}" no está asociado al producto "${p.nombre}"`
           )
         }
-        if (md.costoAplicado !== undefined) mod.costoAplicado = md.costoAplicado
+        if (opciones.confiarCongelado && md.costoAplicado !== undefined) mod.costoAplicado = md.costoAplicado
         modificadoresDetallados.push(mod)
         if (mod.tipo === 'Agregar') {
           recargoModificadoresAgregar += mod.costoAplicado ?? mod.costoAdicional ?? 0
@@ -225,7 +229,8 @@ async function procesarCombo(tx, item, opciones = {}) {
   }
 
   const precioComboFinal =
-    comboPrecioCongelado + (item.precioCongelado == null ? recargoModificadoresAgregar : 0)
+    comboPrecioCongelado +
+    (opciones.confiarCongelado && item.precioCongelado != null ? 0 : recargoModificadoresAgregar)
 
   return {
     tipo: 'combo',
@@ -241,8 +246,11 @@ async function procesarCombo(tx, item, opciones = {}) {
 // Procesa UN ítem de la venta/pedido (producto normal o combo) y devuelve su
 // consumo de inventario por cuenta. `opciones.ignorarEstado` permite recalcular
 // (p. ej. devoluciones) aunque hoy esté inactivo o no disponible.
-// `item.precioCongelado` permite forzar el precio (p. ej. al generar la Venta
-// desde un Pedido cuyos precios ya quedaron congelados al capturarse).
+// El precio se calcula SIEMPRE desde la BD: `item.precioCongelado` y
+// `md.costoAplicado` enviados por el cliente se IGNORAN (seguridad). La única
+// excepción es `opciones.confiarCongelado = true`, que solo activan los flujos
+// internos que traen precios ya congelados desde la BD (p. ej. cobrar un Pedido
+// capturado antes, cuyas filas guardaron el precio al crearse).
 export async function procesarItem(tx, item, opciones = {}) {
   if (item.comboId != null) {
     return procesarCombo(tx, item, opciones)
@@ -269,11 +277,13 @@ export async function procesarItem(tx, item, opciones = {}) {
   const esMitad = item.esMitadYMitad === true
   const nota = typeof item.nota === 'string' ? item.nota.trim() : ''
 
-  // Precio base congelado: el enviado explícitamente (p. ej. al generar la
-  // Venta desde un Pedido con precios ya congelados) o el precio del producto.
+  // Precio base congelado: SIEMPRE el precio actual del producto (seguridad:
+  // los precios se calculan solo desde la BD). `confiarCongelado` (solo flujos
+  // internos con datos persistidos) respeta el `item.precioCongelado`.
   // Para mitad y mitad este valor se sobreescribe con la suma de las mitades
   // de los sabores elegidos (ver abajo), NUNCA con el precio del producto base.
-  let precioCongelado = item.precioCongelado ?? producto.precio
+  let precioCongelado =
+    opciones.confiarCongelado && item.precioCongelado != null ? item.precioCongelado : producto.precio
 
   // Modificadores pedidos (solo aplican a productos con receta).
   const modificadoresDetallados = []
@@ -292,9 +302,9 @@ export async function procesarItem(tx, item, opciones = {}) {
       if (!permitidos.has(mod.id)) {
         throw new HttpError(400, `El modificador "${mod.nombre}" no está asociado al producto "${producto.nombre}"`)
       }
-      // Permite congelar el costo del modificador (p. ej. generando la Venta
-      // desde un Pedido cuyos costos quedaron fijos al capturarse).
-      if (md.costoAplicado !== undefined) mod.costoAplicado = md.costoAplicado
+      // Permite congelar el costo del modificador SOLO en flujos internos
+      // (confiarCongelado) con costos ya fijos en la BD (p. ej. cobrar un Pedido).
+      if (opciones.confiarCongelado && md.costoAplicado !== undefined) mod.costoAplicado = md.costoAplicado
       modificadoresDetallados.push(mod)
     }
   }
@@ -359,8 +369,12 @@ export async function procesarItem(tx, item, opciones = {}) {
 
     // Precio del producto mitad y mitad (docs/03): suma de la mitad del precio
     // de cada sabor, redondeada al peso entero más cercano. El precio fijo del
-    // producto "base" (permiteMitadYMitad=true) NUNCA aplica aquí.
-    if (item.precioCongelado == null) {
+    // producto "base" (permiteMitadYMitad=true) NUNCA aplica aquí. El
+    // `precioCongelado` del cliente se IGNORA; solo `confiarCongelado` (flujos
+    // internos con precios persistidos) respeta un valor ya congelado.
+    if (opciones.confiarCongelado && item.precioCongelado != null) {
+      precioCongelado = item.precioCongelado
+    } else {
       precioCongelado = Math.round((sabor1.precio + sabor2.precio) / 2)
     }
 
@@ -573,7 +587,7 @@ export async function ejecutarVenta(tx, {
 // descontar" por fila/cuenta (usos, cuentasTope, capShares). Devuelve
 // { conflicto, faltantes, mensaje, opcionesPrecio } si falta stock sin
 // confirmar, o { itemsProcesados, ventaRows, total, usos, capShares }.
-async function prepararVenta(tx, { productos, usarDisponible, validarStock = true }) {
+async function prepararVenta(tx, { productos, usarDisponible, validarStock = true, confiarCongelado = false }) {
   const confirmados = normalizarUsarDisponible(usarDisponible)
   const confirmarTodo = usarDisponible === true
 
@@ -581,7 +595,7 @@ async function prepararVenta(tx, { productos, usarDisponible, validarStock = tru
   const requerimientos = new Map()
   const itemsProcesados = []
   for (const item of productos) {
-    const procesado = item?.tipo ? item : await procesarItem(tx, item)
+    const procesado = item?.tipo ? item : await procesarItem(tx, item, { confiarCongelado })
     itemsProcesados.push(procesado)
     if (procesado.tipo === 'combo') {
       for (const dp of procesado.detalleProductos) agregarConsumos(requerimientos, dp.consumos)
@@ -845,8 +859,8 @@ async function validarStockDeFilas(tx, ventaRows, indices, usarDisponible) {
 // movimientos a la Venta nueva sin duplicar el descuento.
 // Devuelve { conflicto, faltantes, mensaje, opcionesPrecio } si falta stock sin
 // confirmar, o { ok: true, movimientos } si se reservó correctamente.
-export async function descontarInventarioPedido(tx, { productos, pedidoId, usarDisponible }) {
-  const prep = await prepararVenta(tx, { productos, usarDisponible })
+export async function descontarInventarioPedido(tx, { productos, pedidoId, usarDisponible, confiarCongelado = false }) {
+  const prep = await prepararVenta(tx, { productos, usarDisponible, confiarCongelado })
   if (prep.conflicto) return prep
 
   const { ventaRows, capShares } = prep
@@ -890,8 +904,9 @@ export async function crearVentaPedido(tx, {
   usuarioId,
   diaOperativoId,
   usarDisponible,
+  confiarCongelado = false,
 }) {
-  const prep = await prepararVenta(tx, { productos, validarStock: false })
+  const prep = await prepararVenta(tx, { productos, validarStock: false, confiarCongelado })
 
   // Detectar las filas que requieren un descuento NUEVO (respaldo): las que no
   // tienen movimientos de reserva que re-vincular (pedidoProductoId sin

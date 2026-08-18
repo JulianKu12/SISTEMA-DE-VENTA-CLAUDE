@@ -455,6 +455,62 @@ try {
   ok(clickUsar.status === 201 && clickUsar.data.estadoPago === 'Pagado', '"Usar lo disponible" (usarDisponible:true) -> 201, vende solo lo que hay')
   ok((await stockProducto(prodReg.id)) === 0, 'descuento topeado a lo disponible: stock 0 (NUNCA negativo)')
 
+  console.log('== SEGURIDAD: precios manipulados en el body SIEMPRE se ignoran ==')
+  const estSec5 = await req('GET', '/api/caja/estado')
+  if (estSec5.data?.abierta) {
+    await req('POST', '/api/caja/cerrar', { efectivoContado: 0, usuarioId: admin.id })
+  }
+  const abrirSec5 = await req('POST', '/api/caja/abrir', { fondoInicial: 0, usuarioId: admin.id })
+  ok(abrirSec5.status === 201, 'abrir caja fresca para las pruebas de precio manipulado')
+
+  const secIng5 = await prisma.ingrediente.create({ data: { nombre: 'SecIng5', unidadMedida: 'kg', stockActual: 100, stockMinimoAlerta: 0 } })
+  await prisma.movimiento_Inventario.create({ data: { ingredienteId: secIng5.id, tipoMovimiento: 'Entrada', cantidad: 100 } })
+  const secProd5 = await prisma.producto.create({ data: { nombre: 'SecProd5', precio: 15, tipo: 'Con_receta' } })
+  await prisma.producto_Ingrediente.create({ data: { productoId: secProd5.id, ingredienteId: secIng5.id, cantidad: 1 } })
+  const secMod5 = await prisma.modificador.create({
+    data: { nombre: 'SecMod5', tipo: 'Agregar', ingredienteAfectadoId: secIng5.id, cantidadExtra: 1, costoAdicional: 3 },
+  })
+  await prisma.producto_Modificador.create({ data: { productoId: secProd5.id, modificadorId: secMod5.id } })
+  const secCombo5 = await prisma.combo.create({ data: { nombre: 'SecCombo5', precioEspecial: 30 } })
+  await prisma.combo_Producto.create({ data: { comboId: secCombo5.id, productoId: secProd5.id, cantidad: 1 } })
+
+  const vSec5 = await req('POST', '/api/ventas', {
+    productos: [{ productoId: secProd5.id, cantidad: 1, precioCongelado: 0.01 }],
+    metodoPago: 'Efectivo', usuarioId: admin.id,
+  })
+  ok(vSec5.status === 201 && vSec5.data.venta.total === 15 && vSec5.data.venta.productos[0].precioCongelado === 15,
+    'venta directa IGNORA precioCongelado:0.01 -> cobra 15 (precio de la BD)')
+
+  const vSec5Mod = await req('POST', '/api/ventas', {
+    productos: [{ productoId: secProd5.id, cantidad: 1, modificadores: [{ modificadorId: secMod5.id, costoAplicado: 0.01 }] }],
+    metodoPago: 'Efectivo', usuarioId: admin.id,
+  })
+  ok(vSec5Mod.status === 201 && vSec5Mod.data.venta.total === 18, 'costoAplicado:0.01 IGNORADO -> costo real 3 (total 18)')
+
+  const vSec5Combo = await req('POST', '/api/ventas', {
+    productos: [{ comboId: secCombo5.id, cantidad: 1, precioCongelado: 0.01 }],
+    metodoPago: 'Efectivo', usuarioId: admin.id,
+  })
+  ok(vSec5Combo.status === 201 && vSec5Combo.data.venta.total === 30, 'combo IGNORA precioCongelado:0.01 -> cobra precio especial 30')
+
+  const pSec5 = await req('POST', '/api/pedidos', {
+    tipo: 'Para_recoger', origen: 'Telefono', nombreClienteLibre: 'SecPedido5',
+    productos: [{ productoId: secProd5.id, cantidad: 1, precioCongelado: 0.01 }],
+    metodoPago: 'Efectivo', montoReferenciaPago: 100, usuarioId: admin.id,
+  })
+  ok(pSec5.status === 201 && pSec5.data.total === 15, 'pedido IGNORA precioCongelado:0.01 al crearse -> total real 15')
+
+  await prisma.producto.update({ where: { id: secProd5.id }, data: { precio: 999 } })
+  const pagoSec5 = await req('PATCH', `/api/pedidos/${pSec5.data.id}/estado-pago`, { estadoPago: 'Pagado', precioCongelado: 0.01, usuarioId: admin.id })
+  ok(pagoSec5.status === 200 && pagoSec5.data.venta.total === 15,
+    'pago de pedido IGNORA precioCongelado:0.01 -> venta respeta el precio CONGELADO en BD (15, no 999)')
+
+  const vSec5Nuevo = await req('POST', '/api/ventas', {
+    productos: [{ productoId: secProd5.id, cantidad: 1, precioCongelado: 0.01 }],
+    metodoPago: 'Efectivo', usuarioId: admin.id,
+  })
+  ok(vSec5Nuevo.status === 201 && vSec5Nuevo.data.venta.total === 999, 'precio SIEMPRE desde BD: tras subirlo a 999, la nueva venta cobra 999 (no 0.01)')
+
   console.log(`\nResultado: ${fallas === 0 ? 'TODAS LAS PRUEBAS PASARON' : fallas + ' prueba(s) fallaron'}`)
 } catch (e) {
   console.error('ERROR EN PRUEBA:', e)

@@ -3,6 +3,9 @@ export function notFoundHandler(_req, res) {
 }
 
 export function errorHandler(err, _req, res, _next) {
+  if (err?.type === 'entity.too.large') {
+    return res.status(413).json({ message: 'La petición excede el tamaño máximo permitido (1mb)' })
+  }
   if (err?.code === 'P2025') {
     return res.status(404).json({ message: 'Recurso no encontrado' })
   }

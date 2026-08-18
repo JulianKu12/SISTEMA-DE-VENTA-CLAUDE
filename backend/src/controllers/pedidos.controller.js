@@ -514,6 +514,7 @@ export const cambiarEstadoPago = asyncHandler(async (req, res) => {
       usuarioId,
       diaOperativoId: dia.id,
       usarDisponible,
+      confiarCongelado: true,
     })
     if (r.conflicto) {
       const e = new HttpError(409, `No se pudo pagar el pedido: ${r.mensaje}`)
@@ -728,6 +729,7 @@ export const cambiarEstadoPreparacion = asyncHandler(async (req, res) => {
         usuarioId,
         diaOperativoId: dia.id,
         usarDisponible,
+        confiarCongelado: true,
       })
       if (r.conflicto) {
         const e = new HttpError(409, `No se pudo registrar el "No cobrar": ${r.mensaje}`)
@@ -849,6 +851,7 @@ export const editarPedido = asyncHandler(async (req, res) => {
           ),
           pedidoId: pedido.id,
           usarDisponible,
+          confiarCongelado: true,
         })
         if (reserva.conflicto) {
           const e = new HttpError(409, `No se pudo editar el pedido: ${reserva.mensaje}`)
@@ -978,6 +981,7 @@ export const editarPedido = asyncHandler(async (req, res) => {
         productos: await itemsDesdePp(tx, nuevosPp),
         pedidoId: pedido.id,
         usarDisponible,
+        confiarCongelado: true,
       })
       if (reserva.conflicto) {
         const e = new HttpError(409, `No se pudo editar el pedido: ${reserva.mensaje}`)
