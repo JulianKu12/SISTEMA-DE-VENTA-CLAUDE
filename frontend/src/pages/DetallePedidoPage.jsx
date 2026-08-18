@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 import Button from '../components/ui/Button'
 import ConfirmModal from '../components/ui/ConfirmModal'
@@ -76,10 +76,10 @@ const MOTIVOS_DEVOLUCION = [
 ]
 
 const MEDIOS_DEVOLUCION = [
-  { id: 'Efectivo', etiqueta: 'Efectivo' },
+  { id: 'Efectivo', etiqueta: 'Efectivo (fuera de esta caja / ya cerrada)' },
   { id: 'Tarjeta', etiqueta: 'Tarjeta' },
   { id: 'Transferencia', etiqueta: 'Transferencia' },
-  { id: 'Efectivo_de_caja', etiqueta: 'Efectivo de caja' },
+  { id: 'Efectivo_de_caja', etiqueta: 'Efectivo (se resta de esta caja)' },
 ]
 
 function formatearMonto(monto) {
@@ -300,7 +300,7 @@ function ModalRepartidor({ disponibles, onSeleccionar, onCancelar }) {
   )
 }
 
-function ModalAgregar({ productos, combos, onAgregar, onCancelar }) {
+function ModalAgregar({ productos, combos, cargando, error, onReintentar, onAgregar, onCancelar }) {
   const [tipo, setTipo] = useState('producto')
   const [seleccionId, setSeleccionId] = useState(null)
   const [cantidad, setCantidad] = useState(1)
@@ -374,21 +374,41 @@ function ModalAgregar({ productos, combos, onAgregar, onCancelar }) {
             <span className="mb-1 block text-xs font-medium text-muted">
               {tipo === 'producto' ? 'Producto' : 'Combo'}
             </span>
-            <select
-              value={seleccionId ?? ''}
-              onChange={(e) => setSeleccionId(e.target.value ? Number(e.target.value) : null)}
-              className="w-full rounded-2xl border-none bg-input px-4 py-3 text-base text-ink outline-none transition focus:ring-2 focus:ring-accent/40"
-            >
-              <option value="" disabled>
-                Elige uno
-              </option>
-              {(opciones || []).map((o) => (
-                <option key={o.id} value={o.id}>
-                  {o.nombre} — {formatearMonto(tipo === 'producto' ? o.precio : o.precioEspecial)}
+            {cargando ? (
+              <div className="flex items-center gap-3 rounded-2xl bg-input px-4 py-3 text-sm text-muted">
+                <div className="h-5 w-5 animate-spin rounded-full border-2 border-muted/30 border-t-accent" />
+                Cargando productos…
+              </div>
+            ) : (
+              <select
+                value={seleccionId ?? ''}
+                onChange={(e) => setSeleccionId(e.target.value ? Number(e.target.value) : null)}
+                disabled={!opciones || opciones.length === 0}
+                className="w-full rounded-2xl border-none bg-input px-4 py-3 text-base text-ink outline-none transition focus:ring-2 focus:ring-accent/40 disabled:opacity-50"
+              >
+                <option value="" disabled>
+                  Elige uno
                 </option>
-              ))}
-            </select>
+                {(opciones || []).map((o) => (
+                  <option key={o.id} value={o.id}>
+                    {o.nombre} — {formatearMonto(tipo === 'producto' ? o.precio : o.precioEspecial)}
+                  </option>
+                ))}
+              </select>
+            )}
           </label>
+          {error && (
+            <div className="mt-2 flex items-center justify-between gap-2 rounded-xl bg-danger/10 px-3 py-2">
+              <span className="text-sm font-medium text-danger">{error}</span>
+              <button
+                type="button"
+                onClick={onReintentar}
+                className="shrink-0 rounded-full bg-danger px-3 py-1 text-xs font-semibold text-white transition active:scale-95"
+              >
+                Reintentar
+              </button>
+            </div>
+          )}
         </div>
 
         <div className="mt-4">
@@ -419,7 +439,7 @@ function ModalAgregar({ productos, combos, onAgregar, onCancelar }) {
           <Button variant="secondary" size="md" className="flex-1" onClick={onCancelar}>
             Cancelar
           </Button>
-          <Button size="md" className="flex-1" disabled={!seleccionado} onClick={continuar}>
+          <Button size="md" className="flex-1" disabled={cargando || !seleccionado} onClick={continuar}>
             Continuar
           </Button>
         </div>
@@ -904,7 +924,7 @@ function ModalDevolucion({ venta, onConfirmar, onCancelar }) {
             onChange={(e) => setMonto(e.target.value)}
             placeholder="0.00"
           />
-        </div>
+</div>
 
         <div className="mt-4">
           <span className="mb-1 block text-xs font-medium text-muted">Motivo</span>
@@ -965,6 +985,69 @@ function ModalDevolucion({ venta, onConfirmar, onCancelar }) {
   )
 }
 
+// Modal para elegir el medio al devolver el dinero de un Pedido Pagado que se
+// está cancelando (mismo selector que el modal de "Registrar devolución").
+// El medio NO se predetermina al método de pago original: el usuario debe
+// elegirlo explícitamente (salvo pedidos noCobrar, donde no hay dinero real).
+function ModalMedioDevolucion({ monto, noCobrar, onConfirmar, onCancelar }) {
+  const [medioDevolucion, setMedioDevolucion] = useState(noCobrar ? 'Efectivo_de_caja' : '')
+
+  useEffect(() => {
+    const overflowAnterior = document.body.style.overflow
+    document.body.style.overflow = 'hidden'
+    const cerrarConEsc = (e) => {
+      if (e.key === 'Escape') onCancelar()
+    }
+    window.addEventListener('keydown', cerrarConEsc)
+    return () => {
+      document.body.style.overflow = overflowAnterior
+      window.removeEventListener('keydown', cerrarConEsc)
+    }
+  }, [onCancelar])
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4" role="dialog" aria-modal="true">
+      <div
+        className="absolute inset-0 animate-[fade-in_200ms_ease-out] bg-ink/40 backdrop-blur-sm"
+        onClick={onCancelar}
+      />
+      <div className="relative w-full max-w-md animate-[sheet-up_280ms_ease-out] rounded-3xl bg-card p-6 shadow-card">
+        <h2 className="text-lg font-bold text-ink">Devolver el dinero</h2>
+        <p className="mt-2 text-sm leading-relaxed text-muted">
+          El pedido se cancelará y se registrará una devolución total de{' '}
+          <span className="font-semibold text-ink">{formatearMonto(monto)}</span>. Elige el medio de
+          devolución:
+        </p>
+        <div className="mt-4">
+          <span className="mb-1 block text-xs font-medium text-muted">Medio de devolución</span>
+          <select
+            value={medioDevolucion}
+            onChange={(e) => setMedioDevolucion(e.target.value)}
+            className="w-full rounded-2xl border-none bg-input px-4 py-3 text-base text-ink outline-none transition focus:ring-2 focus:ring-accent/40"
+          >
+            <option value="" disabled>
+              Selecciona el medio de devolución
+            </option>
+            {MEDIOS_DEVOLUCION.map((m) => (
+              <option key={m.id} value={m.id}>
+                {m.etiqueta}
+              </option>
+            ))}
+          </select>
+        </div>
+        <div className="mt-6 flex gap-3">
+          <Button variant="secondary" size="md" className="flex-1" onClick={onCancelar}>
+            Cancelar
+          </Button>
+          <Button size="md" className="flex-1" disabled={!medioDevolucion} onClick={() => onConfirmar(medioDevolucion)}>
+            Devolver y cancelar
+          </Button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 function DetallePedidoPage() {
   const { id } = useParams()
   const navigate = useNavigate()
@@ -979,10 +1062,16 @@ function DetallePedidoPage() {
   const [edicionActiva, setEdicionActiva] = useState(false)
   const [productos, setProductos] = useState(null)
   const [combos, setCombos] = useState(null)
+  const [cargandoCatalogo, setCargandoCatalogo] = useState(false)
+  const [errorCatalogo, setErrorCatalogo] = useState('')
+  const catalogoEnCurso = useRef(false)
   const [confirmarCancelarAbierto, setConfirmarCancelarAbierto] = useState(false)
   const [regresoPendiente, setRegresoPendiente] = useState(null)
+  const [devolverDineroPendiente, setDevolverDineroPendiente] = useState(null)
+  const [modalMedioDevolucion, setModalMedioDevolucion] = useState(null)
   const [pendienteMonto, setPendienteMonto] = useState(null)
   const [pendienteStock, setPendienteStock] = useState(null)
+  const [pendientePagoStock, setPendientePagoStock] = useState(false)
   const [modalDevolucion, setModalDevolucion] = useState(null)
   const [ventaInfo, setVentaInfo] = useState(null)
 
@@ -1115,23 +1204,39 @@ function DetallePedidoPage() {
 
   // Resuelve la pregunta de inventario tras confirmar una cancelación o un
   // quitar-ítem. `regresa` = true cuando se pulsa "Sí, regresar".
+  const ejecutarCancelacion = (regresa, devolverDinero = false, medioDevolucion = null) => {
+    correr(
+      () =>
+        cambiarEstadoPreparacion(id, {
+          estadoPreparacion: 'Cancelado',
+          regresaAInventario: regresa,
+          ...(devolverDinero ? { devolverDinero: true, medioDevolucion } : {}),
+        }),
+      devolverDinero
+        ? 'Pedido cancelado y dinero devuelto'
+        : regresa
+          ? 'Pedido cancelado y regresado a inventario'
+          : 'Pedido cancelado (sin regreso a inventario)',
+    ).then((res) => {
+      if (res) {
+        setEdicionActiva(false)
+        cargar()
+      }
+    })
+  }
+
   const resolverRegreso = (regresa) => {
     const pendiente = regresoPendiente
     setRegresoPendiente(null)
     if (!pendiente) return
     if (pendiente.tipo === 'cancelar') {
-      correr(
-        () =>
-          cambiarEstadoPreparacion(id, {
-            estadoPreparacion: 'Cancelado',
-            regresaAInventario: regresa,
-          }),
-        regresa
-          ? 'Pedido cancelado y regresado a inventario'
-          : 'Pedido cancelado (sin regreso a inventario)',
-      ).then((res) => {
-        if (res) setEdicionActiva(false)
-      })
+      if (pedido?.estadoPago === 'Pagado') {
+        // Pedido pagado: además de la pregunta de inventario, se pregunta si
+        // se devuelve el dinero (sí/no) y, en caso afirmativo, por qué medio.
+        setDevolverDineroPendiente({ regresa })
+        return
+      }
+      ejecutarCancelacion(regresa, false)
       return
     }
     const linea = pendiente.linea
@@ -1155,18 +1260,30 @@ function DetallePedidoPage() {
     setRegresoPendiente({ tipo: 'quitar', linea })
   }
 
-  const abrirAgregar = async () => {
+  const cargarCatalogo = async () => {
+    if (catalogoEnCurso.current) return
+    catalogoEnCurso.current = true
+    setCargandoCatalogo(true)
+    setErrorCatalogo('')
+    try {
+      const [p, c] = await Promise.all([
+        productos === null ? obtenerProductos() : Promise.resolve(productos),
+        combos === null ? obtenerCombos() : Promise.resolve(combos),
+      ])
+      setProductos(p)
+      setCombos(c.filter((combo) => combo.estado === 'Activo'))
+    } catch (err) {
+      setErrorCatalogo(err.message)
+    } finally {
+      catalogoEnCurso.current = false
+      setCargandoCatalogo(false)
+    }
+  }
+
+  const abrirAgregar = () => {
     setError('')
     setModalAgregar(true)
-    if (productos === null || combos === null) {
-      try {
-        const [p, c] = await Promise.all([obtenerProductos(), obtenerCombos()])
-        setProductos(p)
-        setCombos(c.filter((combo) => combo.estado === 'Activo'))
-      } catch (err) {
-        setError(err.message)
-      }
-    }
+    if (productos === null || combos === null) cargarCatalogo()
   }
 
   const ejecutarEdicion = async (operacion, montoReferenciaPago, usarDisponible = false) => {
@@ -1254,11 +1371,35 @@ function DetallePedidoPage() {
     else throw new Error('No se pudo actualizar el pedido con el nuevo monto')
   }
 
-  const marcarPagado = () => {
-    correr(
-      () => cambiarEstadoPago(id, { estadoPago: 'Pagado' }),
-      'Pedido pagado. Venta generada.',
-    )
+  const marcarPagado = async (usarDisponible = false) => {
+    if (ocupado) return
+    setOcupado(true)
+    setError('')
+    setNotificacion('')
+    setStockFaltante(null)
+    try {
+      const res = await cambiarEstadoPago(id, {
+        estadoPago: 'Pagado',
+        ...(usarDisponible ? { usarDisponible: true } : {}),
+      })
+      setPendientePagoStock(false)
+      if (res?.pedido) setPedido(res.pedido)
+      setNotificacion('Pedido pagado. Venta generada.')
+      return res
+    } catch (err) {
+      // Pedido creado antes del rediseño de reserva (sin movimientos de
+      // inventario reservados): al pagarse se valida el stock como una venta
+      // normal; si no alcanza, se ofrece "usar lo disponible" para continuar.
+      if (err.stockInsuficiente) {
+        setStockFaltante(err.stockInsuficiente)
+        setPendientePagoStock(true)
+      } else {
+        setError(err.message)
+      }
+      return null
+    } finally {
+      setOcupado(false)
+    }
   }
 
   const puedeDevolver = enEntregado && pedido?.venta?.id != null
@@ -1395,6 +1536,16 @@ function DetallePedidoPage() {
                 }
               >
                 {ocupado ? 'Enviando…' : 'Usar lo disponible'}
+              </button>
+            )}
+            {pendientePagoStock && (
+              <button
+                type="button"
+                className="mt-1 w-full rounded-xl bg-danger px-4 py-2 text-sm font-semibold text-white disabled:opacity-50"
+                disabled={ocupado}
+                onClick={() => marcarPagado(true)}
+              >
+                {ocupado ? 'Procesando…' : 'Usar lo disponible'}
               </button>
             )}
           </div>
@@ -1644,7 +1795,7 @@ function DetallePedidoPage() {
                 </Button>
               )}
               {enEntregado && pendienteDePago && !(esDomicilio && pedido.repartidor) && (
-                <Button size="md" onClick={marcarPagado} disabled={ocupado}>
+                <Button size="md" onClick={() => marcarPagado(false)} disabled={ocupado}>
                   Marcar Pagado
                 </Button>
               )}
@@ -1706,6 +1857,9 @@ function DetallePedidoPage() {
         <ModalAgregar
           productos={productos || []}
           combos={combos || []}
+          cargando={cargandoCatalogo}
+          error={errorCatalogo}
+          onReintentar={cargarCatalogo}
           onAgregar={agregarLinea}
           onCancelar={() => setModalAgregar(false)}
         />
@@ -1747,6 +1901,39 @@ function DetallePedidoPage() {
         onConfirmar={() => resolverRegreso(true)}
         onCancelar={() => resolverRegreso(false)}
       />
+
+      <ConfirmModal
+        abierto={devolverDineroPendiente !== null}
+        titulo="Devolver el dinero"
+        mensaje="¿Deseas devolver el dinero de este pedido? Se cancelará y se registrará una devolución total."
+        confirmarEtiqueta="Sí, devolver"
+        cancelarEtiqueta="No devolver"
+        extraEtiqueta="Cancelar"
+        onExtra={() => setDevolverDineroPendiente(null)}
+        onConfirmar={() => {
+          const pendiente = devolverDineroPendiente
+          setDevolverDineroPendiente(null)
+          if (pendiente) setModalMedioDevolucion(pendiente)
+        }}
+        onCancelar={() => {
+          const pendiente = devolverDineroPendiente
+          setDevolverDineroPendiente(null)
+          if (pendiente) ejecutarCancelacion(pendiente.regresa, false)
+        }}
+      />
+
+      {modalMedioDevolucion && (
+        <ModalMedioDevolucion
+          monto={pedido?.venta?.total ?? pedido?.total ?? 0}
+          noCobrar={pedido?.venta?.noCobrar}
+          onConfirmar={(medioDevolucion) => {
+            const pendiente = modalMedioDevolucion
+            setModalMedioDevolucion(null)
+            if (pendiente) ejecutarCancelacion(pendiente.regresa, true, medioDevolucion)
+          }}
+          onCancelar={() => setModalMedioDevolucion(null)}
+        />
+      )}
     </main>
   )
 }

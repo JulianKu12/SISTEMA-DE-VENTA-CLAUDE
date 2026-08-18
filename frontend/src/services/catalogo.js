@@ -1,8 +1,13 @@
 async function peticionAutenticada(ruta) {
   const token = localStorage.getItem('pos.token')
-  const respuesta = await fetch(ruta, {
-    headers: { Authorization: `Bearer ${token}` },
-  })
+  let respuesta
+  try {
+    respuesta = await fetch(ruta, {
+      headers: { Authorization: `Bearer ${token}` },
+    })
+  } catch {
+    throw new Error('No se pudo conectar con el servidor. Intenta de nuevo.')
+  }
 
   if (!respuesta.ok) {
     let mensaje = 'No se pudo conectar con el servidor. Intenta de nuevo.'

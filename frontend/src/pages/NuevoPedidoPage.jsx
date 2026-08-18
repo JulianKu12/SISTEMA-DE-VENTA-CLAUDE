@@ -421,6 +421,19 @@ export function ModalCombo({ combo, onCancelar, onAgregar }) {
       .map((pm) => pm.modificador)
       .filter((m) => m && m.estado === 'Activo')
 
+  // Precio del combo: base fija (precioEspecial) + costo_adicional de cada
+  // modificador tipo "Agregar" seleccionado en cualquiera de sus productos
+  // incluidos. Quitar y Sustituir no cambian el precio.
+  const recargoAgregar = productosDelCombo.reduce(
+    (acc, cp) =>
+      acc +
+      modificadoresDe(cp.producto)
+        .filter((m) => seleccion[cp.producto.id]?.[m.id] && m.tipo === 'Agregar')
+        .reduce((s, m) => s + (m.costoAdicional || 0), 0),
+    0,
+  )
+  const precioCombo = combo.precioEspecial + recargoAgregar
+
   useEffect(() => {
     const overflowAnterior = document.body.style.overflow
     document.body.style.overflow = 'hidden'
@@ -592,7 +605,8 @@ export function ModalCombo({ combo, onCancelar, onAgregar }) {
 
           <p className="rounded-2xl bg-muted/5 px-4 py-3 text-xs text-muted">
             El precio del combo es cerrado ({formatearMonto(combo.precioEspecial)}): los
-            modificadores ajustan la preparación pero no cambian el precio.
+            modificadores Quitar y Sustituir no cambian el precio, pero cada
+            modificador Agregar suma su costo extra.
           </p>
 
           <div className="flex items-center gap-3 pt-1">
@@ -600,7 +614,7 @@ export function ModalCombo({ combo, onCancelar, onAgregar }) {
               Cancelar
             </Button>
             <Button size="md" className="flex-1" onClick={confirmar}>
-              Agregar · {formatearMonto(combo.precioEspecial)}
+              Agregar · {formatearMonto(precioCombo)}
             </Button>
           </div>
         </div>
@@ -793,7 +807,18 @@ function NuevoPedidoPage() {
   }
 
   const subtotalDe = (item) => {
-    const costoMods = item.modificadores.reduce((acc, m) => acc + (m.costoAdicional || 0), 0)
+    const costoMods =
+      item.tipoLinea === 'combo'
+        ? (item.productos || []).reduce(
+            (acc, p) =>
+              acc +
+              (p.modificadores || []).reduce(
+                (s, m) => s + (m.tipo === 'Agregar' ? m.costoAdicional || 0 : 0),
+                0,
+              ),
+            0,
+          )
+        : item.modificadores.reduce((acc, m) => acc + (m.costoAdicional || 0), 0)
     return (item.precioUnitario + costoMods) * item.cantidad
   }
 
@@ -1631,7 +1656,7 @@ function NuevoPedidoPage() {
                     <Button
                       className="mt-3 w-full"
                       disabled={ticket.length === 0 || enviando}
-                      onClick={confirmarPedido}
+                      onClick={() => confirmarPedido()}
                     >
                       {enviando ? 'Creando pedido…' : 'Confirmar pedido'}
                     </Button>

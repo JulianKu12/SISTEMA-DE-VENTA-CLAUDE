@@ -12,7 +12,7 @@ export const TIPOS_MOVIMIENTO_INVENTARIO = [
 ]
 export const MOTIVOS_AJUSTE = ['Conteo_fisico', 'Merma', 'Otro']
 export const CATEGORIAS_GASTO = ['Insumos', 'Servicios', 'Sueldos', 'Otro']
-export const MOTIVOS_DEVOLUCION = ['Producto_mal_estado', 'Pedido_incorrecto', 'Cliente_insatisfecho', 'Otro']
+export const MOTIVOS_DEVOLUCION = ['Producto_mal_estado', 'Pedido_incorrecto', 'Cliente_insatisfecho', 'Cancelacion_pedido', 'Otro']
 export const MEDIOS_DEVOLUCION = ['Efectivo', 'Tarjeta', 'Transferencia', 'Efectivo_de_caja']
 export const TIPOS_PEDIDO = ['Para_recoger', 'A_domicilio']
 export const ORIGENES_PEDIDO = ['Mostrador', 'Telefono']

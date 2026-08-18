@@ -119,8 +119,14 @@ async function procesarCombo(tx, item, opciones = {}) {
   validarCantidad(cantidad)
 
   // Precio por unidad del combo: "otro precio" manual (precioCongelado) o el
-  // precio_especial del combo (docs/03).
+  // precio_especial del combo (docs/03). Los modificadores tipo "Agregar"
+  // SUMAN su costo_adicional al precio final del combo (igual que en productos
+  // individuales); Quitar y Sustituir NO cambian el precio. El recargo solo
+  // aplica cuando el precio se calcula en este momento (precioCongelado == null):
+  // si viene congelado (p. ej. al generar la Venta desde un Pedido ya creado)
+  // el recargo ya quedó incluido al congelar el precio.
   const comboPrecioCongelado = item.precioCongelado ?? combo.precioEspecial
+  let recargoModificadoresAgregar = 0
   const notaCombo = typeof item.nota === 'string' ? item.nota.trim() : ''
 
   // Mapa para vincular los Pedido_Producto ya creados al generar la Venta
@@ -176,6 +182,9 @@ async function procesarCombo(tx, item, opciones = {}) {
         }
         if (md.costoAplicado !== undefined) mod.costoAplicado = md.costoAplicado
         modificadoresDetallados.push(mod)
+        if (mod.tipo === 'Agregar') {
+          recargoModificadoresAgregar += mod.costoAplicado ?? mod.costoAdicional ?? 0
+        }
       }
     }
 
@@ -215,11 +224,14 @@ async function procesarCombo(tx, item, opciones = {}) {
     })
   }
 
+  const precioComboFinal =
+    comboPrecioCongelado + (item.precioCongelado == null ? recargoModificadoresAgregar : 0)
+
   return {
     tipo: 'combo',
     comboId: combo.id,
     cantidad,
-    comboPrecioCongelado,
+    comboPrecioCongelado: precioComboFinal,
     nota: notaCombo,
     precioReal,
     detalleProductos,
@@ -739,6 +751,92 @@ async function prepararVenta(tx, { productos, usarDisponible, validarStock = tru
   return { itemsProcesados, ventaRows, total, usos, capShares }
 }
 
+// Valida el stock SOLO de un subconjunto de filas de una venta (usado por
+// crearVentaPedido para el "respaldo" de pedidos viejos sin reserva). Misma
+// semántica que prepararVenta: si falta stock sin confirmar usarDisponible
+// devuelve { conflicto, faltantes, mensaje }; si alcanza (o el usuario confirmó
+// "usar disponible") devuelve { ok, capShares } con la distribución
+// PROPORCIONAL de lo disponible entre esas filas.
+async function validarStockDeFilas(tx, ventaRows, indices, usarDisponible) {
+  const confirmados = normalizarUsarDisponible(usarDisponible)
+  const confirmarTodo = usarDisponible === true
+
+  const requerimientos = new Map()
+  for (const i of indices) {
+    for (const c of ventaRows[i].consumos) {
+      const key = `${c.tipo}:${c.id}`
+      requerimientos.set(key, (requerimientos.get(key) || 0) + c.cantidad)
+    }
+  }
+
+  const stocks = new Map()
+  const faltantes = []
+  for (const [key, requerido] of requerimientos) {
+    const [tipo, id] = key.split(':')
+    const disponible = await stockDe(tx, tipo, Number(id))
+    stocks.set(key, disponible)
+    if (disponible < requerido) {
+      faltantes.push({
+        tipo,
+        id: Number(id),
+        nombre: await resolverNombreCuenta(tx, tipo, Number(id)),
+        requerido,
+        disponible,
+      })
+    }
+  }
+
+  const sinConfirmar = faltantes.filter(
+    (f) => !confirmarTodo && !confirmados.has(`${f.tipo}:${f.id}`)
+  )
+  if (sinConfirmar.length > 0) {
+    return {
+      conflicto: true,
+      faltantes,
+      mensaje:
+        'Stock insuficiente. Confirma qué ingredientes se usarán con la cantidad disponible para continuar (usarDisponible).',
+    }
+  }
+
+  const cuentasTope = new Map()
+  for (const [key, requerido] of requerimientos) {
+    const [tipo, id] = key.split(':')
+    const disponible = stocks.get(key)
+    if (disponible < requerido && (confirmarTodo || confirmados.has(key))) {
+      cuentasTope.set(key, { tipo, id: Number(id), cantidad: disponible })
+    }
+  }
+
+  const capShares = new Map()
+  for (const [key, cuenta] of cuentasTope) {
+    const filas = []
+    for (const i of indices) {
+      for (const c of ventaRows[i].consumos) {
+        if (`${c.tipo}:${c.id}` === key) filas.push({ row: i, cantidad: c.cantidad })
+      }
+    }
+    const totalRequerido = filas.reduce((acc, f) => acc + f.cantidad, 0)
+    if (totalRequerido <= 0) continue
+    let restante = cuenta.cantidad
+    const porFila = new Map()
+    filas.forEach((f, idx) => {
+      const esUltima = idx === filas.length - 1
+      let share
+      if (esUltima) {
+        share = restante
+      } else {
+        share = Math.min(Math.round((f.cantidad * cuenta.cantidad) / totalRequerido), f.cantidad)
+        share = Math.max(0, Math.min(share, restante))
+      }
+      restante -= share
+      porFila.set(f.row, share)
+    })
+    capShares.set(key, porFila)
+  }
+
+  return { ok: true, capShares }
+}
+
 // Descuenta el inventario de un Pedido AL CREARSE (rediseño docs/04 + docs/06):
 // genera los Movimiento_Inventario tipo Salida_venta EXACTOS (con modificadores,
 // mitad y mitad y "usar disponible" ya aplicados), pero SIN venta de por medio:
@@ -791,8 +889,46 @@ export async function crearVentaPedido(tx, {
   esVentaPreviaApertura = false,
   usuarioId,
   diaOperativoId,
+  usarDisponible,
 }) {
   const prep = await prepararVenta(tx, { productos, validarStock: false })
+
+  // Detectar las filas que requieren un descuento NUEVO (respaldo): las que no
+  // tienen movimientos de reserva que re-vincular (pedidoProductoId sin
+  // Salida_venta reservada todavía). Esto SOLO ocurre con pedidos creados antes
+  // del rediseño de reserva (commit 2f87347); los pedidos nuevos SIEMPRE
+  // reservan al crearse (y al editarse), así que solo re-vinculan sin volver a
+  // descontar.
+  const pedidoProductoIds = prep.ventaRows
+    .map((r) => r.pedidoProductoId)
+    .filter((id) => id != null)
+  const reservados = new Set()
+  if (pedidoProductoIds.length > 0) {
+    const grupos = await tx.movimiento_Inventario.groupBy({
+      by: ['pedidoProductoId'],
+      where: { pedidoProductoId: { in: pedidoProductoIds }, ventaProductoId: null },
+      _count: { _all: true },
+    })
+    for (const g of grupos) reservados.add(g.pedidoProductoId)
+  }
+
+  const filasRespaldo = []
+  for (let i = 0; i < prep.ventaRows.length; i++) {
+    const row = prep.ventaRows[i]
+    if (row.pedidoProductoId == null || !reservados.has(row.pedidoProductoId)) {
+      filasRespaldo.push(i)
+    }
+  }
+
+  // Si hay filas de respaldo, validar el stock ANTES de crear la Venta (mismo
+  // comportamiento que una venta normal): si no alcanza y el usuario no confirmó
+  // "usar lo disponible", se responde 409 SIN descontar a ciegas.
+  let capShares = new Map()
+  if (filasRespaldo.length > 0) {
+    const validacion = await validarStockDeFilas(tx, prep.ventaRows, filasRespaldo, usarDisponible)
+    if (validacion.conflicto) return validacion
+    capShares = validacion.capShares
+  }
 
   const venta = await tx.venta.create({
     data: {
@@ -806,7 +942,10 @@ export async function crearVentaPedido(tx, {
     },
   })
 
-  for (const row of prep.ventaRows) {
+  for (let i = 0; i < prep.ventaRows.length; i++) {
+    const row = prep.ventaRows[i]
+    const esRespaldo = row.pedidoProductoId == null || !reservados.has(row.pedidoProductoId)
+
     const ventaProducto = await tx.venta_Producto.create({
       data: {
         ventaId: venta.id,
@@ -840,45 +979,31 @@ export async function crearVentaPedido(tx, {
       })
     }
 
-    if (row.pedidoProductoId != null) {
+    if (!esRespaldo) {
       // Re-vincular la reserva hecha al crear el pedido (Salida_venta con
       // pedidoProductoId y SIN ventaProductoId todavía).
-      const vinculados = await tx.movimiento_Inventario.updateMany({
+      await tx.movimiento_Inventario.updateMany({
         where: { pedidoProductoId: row.pedidoProductoId, ventaProductoId: null },
         data: { ventaProductoId: ventaProducto.id, referenciaId: venta.id, referenciaTipo: 'Venta' },
       })
-
+    } else {
       // Respaldo para pedidos creados ANTES del rediseño (sin reserva): se
       // genera el descuento como una venta normal para no perder trazabilidad.
-      if (vinculados.count === 0) {
-        for (const c of row.consumos) {
-          await tx.movimiento_Inventario.create({
-            data: {
-              ...(c.tipo === 'ingrediente' ? { ingredienteId: c.id } : { productoId: c.id }),
-              tipoMovimiento: 'Salida_venta',
-              cantidad: -c.cantidad,
-              referenciaId: venta.id,
-              referenciaTipo: 'Venta',
-              ventaProductoId: ventaProducto.id,
-              pedidoProductoId: row.pedidoProductoId,
-            },
-          })
-          if (c.tipo === 'ingrediente') {
-            await sincronizarStockIngrediente(tx, c.id)
-          }
-        }
-      }
-    } else {
-      // Fila sin pedidoProductoId (defensivo): descuento directo a la venta.
+      // El stock ya se validó arriba y, si el usuario confirmó "usar lo
+      // disponible", se descuenta solo lo disponible (queda en 0, NUNCA
+      // negativo ni a ciegas).
       for (const c of row.consumos) {
+        const cantidad = capShares.get(`${c.tipo}:${c.id}`)?.get(i) ?? c.cantidad
+        if (!cantidad) continue
         await tx.movimiento_Inventario.create({
           data: {
             ...(c.tipo === 'ingrediente' ? { ingredienteId: c.id } : { productoId: c.id }),
             tipoMovimiento: 'Salida_venta',
-            cantidad: -c.cantidad,
+            cantidad: -cantidad,
             referenciaId: venta.id,
             referenciaTipo: 'Venta',
             ventaProductoId: ventaProducto.id,
+            pedidoProductoId: row.pedidoProductoId,
           },
         })
         if (c.tipo === 'ingrediente') {

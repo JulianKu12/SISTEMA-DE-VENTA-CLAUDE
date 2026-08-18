@@ -4,20 +4,31 @@ import { HttpError } from '../utils/httpError.js'
 import { MOTIVOS_DEVOLUCION, MEDIOS_DEVOLUCION, esEnumValido } from '../utils/enums.js'
 import { sincronizarStockIngrediente } from '../utils/inventario.js'
 
-export const crearDevolucion = asyncHandler(async (req, res) => {
-  const { ventaId, monto, motivo, regresaAInventario = false, medioDevolucion, ventaProductoIds, cantidades = {} } = req.body
+// Crea una Devolución reutilizando la lógica del endpoint POST /api/devoluciones.
+// Se ejecuta DENTRO de la transacción del llamador (`tx`), de modo que puede
+// componerse con otras operaciones (p. ej. cancelar un Pedido Pagado y devolver
+// el dinero — Módulo 06). Devuelve { devolucion, regresos, asociadaASiguienteDia }.
+export async function crearDevolucionTx(tx, {
+  ventaId,
+  monto,
+  motivo,
+  regresaAInventario = false,
+  medioDevolucion,
+  ventaProductoIds,
+  cantidades = {},
+}) {
   if (!ventaId) throw new HttpError(400, 'ventaId es obligatorio')
   if (typeof monto !== 'number' || monto < 0) {
     throw new HttpError(400, 'monto debe ser un número mayor o igual a 0')
   }
   if (!esEnumValido(motivo, MOTIVOS_DEVOLUCION)) {
-    throw new HttpError(400, 'motivo inválido (Producto_mal_estado, Pedido_incorrecto, Cliente_insatisfecho u Otro)')
+    throw new HttpError(400, 'motivo inválido (Producto_mal_estado, Pedido_incorrecto, Cliente_insatisfecho, Cancelacion_pedido u Otro)')
   }
   if (!esEnumValido(medioDevolucion, MEDIOS_DEVOLUCION)) {
     throw new HttpError(400, 'medioDevolucion inválido (Efectivo, Tarjeta, Transferencia o Efectivo_de_caja)')
   }
 
-  const resultado = await prisma.$transaction(async (tx) => {
+  {
     // La Venta original NO se modifica ni se borra (se mantiene para trazabilidad).
     const venta = await tx.venta.findUnique({ where: { id: Number(ventaId) } })
     if (!venta) throw new HttpError(404, 'La venta indicada no existe')
@@ -228,7 +239,11 @@ export const crearDevolucion = asyncHandler(async (req, res) => {
       regresos,
       asociadaASiguienteDia: dia ? false : true,
     }
-  })
+  }
+}
+
+export const crearDevolucion = asyncHandler(async (req, res) => {
+  const resultado = await prisma.$transaction((tx) => crearDevolucionTx(tx, req.body))
 
   res.status(201).json({
     mensaje: 'Devolución registrada',

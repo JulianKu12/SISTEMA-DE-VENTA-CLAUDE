@@ -8,6 +8,7 @@ import {
   ESTADOS_PREPARACION,
   ESTADOS_PAGO,
   METODOS_PAGO,
+  MEDIOS_DEVOLUCION,
   esEnumValido,
 } from '../utils/enums.js'
 import { sincronizarStockIngrediente, stockDe, resolverNombreCuenta } from '../utils/inventario.js'
@@ -17,6 +18,7 @@ import {
   descontarInventarioPedido,
   crearVentaPedido,
 } from './ventas.controller.js'
+import { crearDevolucionTx } from './devoluciones.controller.js'
 import { obtenerConfiguracion } from './config.controller.js'
 
 const includePedido = {
@@ -330,6 +332,17 @@ export const crearPedido = asyncHandler(async (req, res) => {
           cantidad: it.cantidad,
           precioCongelado: it.comboPrecioCongelado,
           pedidoProductos: filas,
+          // Config por producto incluido (nota + modificadores), igual que los
+          // productos simples (línea 369): la reserva inicial ya debe calcular
+          // el inventario CON modificadores, no solo al pagar (itemsDesdePp).
+          productos: it.detalleProductos.map((dp) => ({
+            productoId: dp.productoId,
+            nota: dp.nota || undefined,
+            modificadores: (dp.modificadores || []).map((m) => ({
+              modificadorId: m.modificadorId,
+              costoAplicado: m.costoAplicado,
+            })),
+          })),
         })
       } else {
         const d = it.detalle
@@ -406,7 +419,13 @@ export const crearPedido = asyncHandler(async (req, res) => {
         costoEnvio: costoEnvio ?? 0,
         usuarioId,
         diaOperativoId: dia.id,
+        usarDisponible,
       })
+      if (r.conflicto) {
+        const e = new HttpError(409, `No se pudo generar la venta del pedido: ${r.mensaje}`)
+        e.faltantes = r.faltantes
+        throw e
+      }
       venta = r.venta
     }
 
@@ -461,7 +480,7 @@ export const pedidosPorRepartidor = asyncHandler(async (req, res) => {
 // (nunca se descuenta dos veces).
 export const cambiarEstadoPago = asyncHandler(async (req, res) => {
   const { id } = req.params
-  const { estadoPago } = req.body
+  const { estadoPago, usarDisponible } = req.body
   if (estadoPago !== 'Pagado') {
     throw new HttpError(400, 'Solo se permite pasar estado_pago a Pagado')
   }
@@ -494,7 +513,13 @@ export const cambiarEstadoPago = asyncHandler(async (req, res) => {
       costoEnvio: pedido.costoEnvio ?? 0,
       usuarioId,
       diaOperativoId: dia.id,
+      usarDisponible,
     })
+    if (r.conflicto) {
+      const e = new HttpError(409, `No se pudo pagar el pedido: ${r.mensaje}`)
+      e.faltantes = r.faltantes
+      throw e
+    }
 
     const actualizado = await tx.pedido.update({
       where: { id: pedido.id },
@@ -577,13 +602,19 @@ async function regresarInventarioDePedido(tx, pedido) {
 
 export const cambiarEstadoPreparacion = asyncHandler(async (req, res) => {
   const { id } = req.params
-  const { estadoPreparacion, repartidorId, regresaAInventario, noCobrar } = req.body
+  const { estadoPreparacion, repartidorId, regresaAInventario, noCobrar, usarDisponible, devolverDinero, medioDevolucion } = req.body
 
   if (!esEnumValido(estadoPreparacion, ESTADOS_PREPARACION)) {
     throw new HttpError(400, 'estadoPreparacion inválido')
   }
   if (noCobrar !== undefined && typeof noCobrar !== 'boolean') {
     throw new HttpError(400, 'noCobrar debe ser un booleano')
+  }
+  if (devolverDinero !== undefined && typeof devolverDinero !== 'boolean') {
+    throw new HttpError(400, 'devolverDinero debe ser un booleano')
+  }
+  if (devolverDinero === true && estadoPreparacion !== 'Cancelado') {
+    throw new HttpError(400, 'devolverDinero solo aplica al cancelar un pedido')
   }
 
   const usuarioId = resolverUsuario(req)
@@ -630,12 +661,40 @@ export const cambiarEstadoPreparacion = asyncHandler(async (req, res) => {
     }
 
     let movimientosRegreso = 0
+    let devolucion = null
     if (estadoPreparacion === 'Cancelado') {
       if (typeof regresaAInventario !== 'boolean') {
         throw new HttpError(400, 'regresaAInventario (booleano) es obligatorio al cancelar un pedido')
       }
       if (regresaAInventario) {
         movimientosRegreso = await regresarInventarioDePedido(tx, pedido)
+      }
+
+      // Devolver el dinero: reutiliza el mecanismo de Devoluciones existente
+      // (POST /api/devoluciones) vía crearDevolucionTx, sin duplicar lógica de
+      // reversión. Solo aplica a pedidos Pagado con Venta vinculada. La
+      // devolución es TOTAL (monto = venta.total) y NO regresa inventario: el
+      // regreso a inventario es una pregunta independiente (regresaAInventario).
+      if (devolverDinero === true) {
+        if (pedido.estadoPago !== 'Pagado') {
+          throw new HttpError(400, 'Solo un pedido Pagado admite devolver el dinero al cancelarlo')
+        }
+        if (!pedido.ventaId) {
+          throw new HttpError(400, 'El pedido no tiene una Venta vinculada para devolver el dinero')
+        }
+        if (!esEnumValido(medioDevolucion, MEDIOS_DEVOLUCION)) {
+          throw new HttpError(400, 'medioDevolucion inválido (Efectivo, Tarjeta, Transferencia o Efectivo_de_caja)')
+        }
+        const venta = await tx.venta.findUnique({ where: { id: pedido.ventaId } })
+        if (!venta) throw new HttpError(404, 'La venta vinculada al pedido no existe')
+        const r = await crearDevolucionTx(tx, {
+          ventaId: venta.id,
+          monto: venta.total,
+          motivo: 'Cancelacion_pedido',
+          medioDevolucion,
+          regresaAInventario: false,
+        })
+        devolucion = r.devolucion
       }
     }
 
@@ -668,7 +727,13 @@ export const cambiarEstadoPreparacion = asyncHandler(async (req, res) => {
         costoEnvio: 0,
         usuarioId,
         diaOperativoId: dia.id,
+        usarDisponible,
       })
+      if (r.conflicto) {
+        const e = new HttpError(409, `No se pudo registrar el "No cobrar": ${r.mensaje}`)
+        e.faltantes = r.faltantes
+        throw e
+      }
       venta = r.venta
       data.noCobrar = true
       data.estadoPago = 'Pagado'
@@ -679,6 +744,7 @@ export const cambiarEstadoPreparacion = asyncHandler(async (req, res) => {
       pedido: await tx.pedido.findUnique({ where: { id: pedido.id }, include: includePedido }),
       movimientosRegreso,
       venta,
+      devolucion,
     }
   })
 
@@ -688,6 +754,9 @@ export const cambiarEstadoPreparacion = asyncHandler(async (req, res) => {
     movimientosCancelacionRegreso: resultado.movimientosRegreso,
     ...(resultado.venta
       ? { mensajeVenta: 'Venta generada como "No cobrar" automáticamente al marcar Entregado.', venta: resultado.venta }
+      : {}),
+    ...(resultado.devolucion
+      ? { mensajeDevolucion: 'Devolución del dinero registrada al cancelar el pedido.', devolucion: resultado.devolucion }
       : {}),
   })
 })

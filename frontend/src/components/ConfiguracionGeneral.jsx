@@ -112,7 +112,7 @@ export default function ConfiguracionGeneral({ onNotificacion, onError }) {
             aria-label="Costo de envío"
             className={CLASE_INPUT}
           />
-          <span className="shrink-0 text-sm font-semibold text-muted">soles</span>
+          <span className="shrink-0 text-sm font-semibold text-muted">pesos</span>
         </div>
       </section>
 

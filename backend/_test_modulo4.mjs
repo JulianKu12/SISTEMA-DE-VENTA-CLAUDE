@@ -28,6 +28,16 @@ async function req(method, path, body) {
   return { status: res.status, data }
 }
 
+async function stockIngrediente(id) {
+  const agg = await prisma.movimiento_Inventario.aggregate({ _sum: { cantidad: true }, where: { ingredienteId: id } })
+  return agg._sum.cantidad ?? 0
+}
+
+async function stockProducto(id) {
+  const agg = await prisma.movimiento_Inventario.aggregate({ _sum: { cantidad: true }, where: { productoId: id } })
+  return agg._sum.cantidad ?? 0
+}
+
 const admin = await prisma.usuario.create({ data: { tipo: 'Administrador', usuario: 'admin_test4', contraseña: await bcrypt.hash('x', 10) } })
 
 async function loginAdmin() {
@@ -443,10 +453,169 @@ try {
   ok(nc && Array.isArray(nc.productos) && nc.productos[0].producto && typeof nc.productos[0].costo === 'number' && nc.productos[0].cantidad === 1, 'reporte no-cobrar: producto, costo y cantidad')
   ok(nc && nc.usuario && nc.usuario.id === admin.id && nc.fechaHora, 'reporte no-cobrar: usuario que la marcó y hora')
 
+  console.log('== Pedido con combo + modificador Agregar/Sustituir: reserva al CREAR ==')
+  const ingAg4 = await prisma.ingrediente.create({ data: { nombre: 'IngAg4', unidadMedida: 'kg', stockActual: 100, stockMinimoAlerta: 0 } })
+  await prisma.movimiento_Inventario.create({ data: { ingredienteId: ingAg4.id, tipoMovimiento: 'Entrada', cantidad: 100 } })
+  const extraAg4 = await prisma.ingrediente.create({ data: { nombre: 'ExtraAg4', unidadMedida: 'kg', stockActual: 100, stockMinimoAlerta: 0 } })
+  await prisma.movimiento_Inventario.create({ data: { ingredienteId: extraAg4.id, tipoMovimiento: 'Entrada', cantidad: 100 } })
+  const prodAg4 = await prisma.producto.create({ data: { nombre: 'ProdAg4', precio: 20, tipo: 'Con_receta' } })
+  await prisma.producto_Ingrediente.create({ data: { productoId: prodAg4.id, ingredienteId: ingAg4.id, cantidad: 1 } })
+  const modAg4 = await prisma.modificador.create({
+    data: { nombre: 'ModAgregar4', tipo: 'Agregar', ingredienteAfectadoId: extraAg4.id, cantidadExtra: 2, costoAdicional: 3 },
+  })
+  await prisma.producto_Modificador.create({ data: { productoId: prodAg4.id, modificadorId: modAg4.id } })
+  const comboAg4 = await prisma.combo.create({ data: { nombre: 'ComboAg4', precioEspecial: 30 } })
+  await prisma.combo_Producto.create({ data: { comboId: comboAg4.id, productoId: prodAg4.id, cantidad: 1 } })
+
+  const stockIngAg4_0 = await stockIngrediente(ingAg4.id)
+  const stockExtraAg4_0 = await stockIngrediente(extraAg4.id)
+  const pComboAg4 = await req('POST', '/api/pedidos', {
+    tipo: 'Para_recoger', origen: 'Telefono', nombreClienteLibre: 'Combo Agregar 4',
+    productos: [{ comboId: comboAg4.id, cantidad: 2, productos: [{ productoId: prodAg4.id, modificadores: [{ modificadorId: modAg4.id }] }] }],
+    metodoPago: 'Efectivo', montoReferenciaPago: 100,
+    usuarioId: admin.id,
+  })
+  ok(pComboAg4.status === 201 && pComboAg4.data.estadoPago === 'Pendiente_pago', 'pedido combo+Agregar -> Pendiente_pago')
+  ok((await stockIngrediente(ingAg4.id)) === stockIngAg4_0 - 2, 'reserva al CREAR descuenta la receta base del combo (1x2)')
+  ok((await stockIngrediente(extraAg4.id)) === stockExtraAg4_0 - 4, 'reserva al CREAR descuenta el extra del modificador Agregar (2x2)')
+  const pagarComboAg4 = await req('PATCH', `/api/pedidos/${pComboAg4.data.id}/estado-pago`, { estadoPago: 'Pagado', usuarioId: admin.id })
+  ok(pagarComboAg4.status === 200, 'pago del combo+Agregar')
+  ok(pComboAg4.data.total === 66, 'pedido combo+Agregar -> total 66 ((30 base + 3 extra) x2)')
+  ok(pagarComboAg4.data.venta.total === 66, 'pago del combo+Agregar -> venta 66 (el Agregar SÍ suma al precio)')
+  ok(
+    pComboAg4.data.productos.every((pp) => pp.comboPrecioCongelado === 33),
+    'precio del combo congelado en 33 (base 30 + extra 3)',
+  )
+  ok((await stockIngrediente(ingAg4.id)) === stockIngAg4_0 - 2, 'pagar NO vuelve a descontar la receta (reserva ya hecha)')
+  ok((await stockIngrediente(extraAg4.id)) === stockExtraAg4_0 - 4, 'pagar NO vuelve a descontar el extra (reserva ya hecha)')
+
+  // Venta directa del mismo combo+Agregar: el precio final también sube.
+  const vComboAg4 = await req('POST', '/api/ventas', {
+    productos: [{ comboId: comboAg4.id, cantidad: 1, productos: [{ productoId: prodAg4.id, modificadores: [{ modificadorId: modAg4.id }] }] }],
+    metodoPago: 'Efectivo',
+    usuarioId: admin.id,
+  })
+  ok(vComboAg4.status === 201 && vComboAg4.data.venta.total === 33, 'venta directa del combo+Agregar -> 33 (30 base + 3 extra)')
+
+  const ingA4 = await prisma.ingrediente.create({ data: { nombre: 'IngA4', unidadMedida: 'kg', stockActual: 100, stockMinimoAlerta: 0 } })
+  await prisma.movimiento_Inventario.create({ data: { ingredienteId: ingA4.id, tipoMovimiento: 'Entrada', cantidad: 100 } })
+  const ingB4 = await prisma.ingrediente.create({ data: { nombre: 'IngB4', unidadMedida: 'kg', stockActual: 100, stockMinimoAlerta: 0 } })
+  await prisma.movimiento_Inventario.create({ data: { ingredienteId: ingB4.id, tipoMovimiento: 'Entrada', cantidad: 100 } })
+  const prodS4 = await prisma.producto.create({ data: { nombre: 'ProdS4', precio: 20, tipo: 'Con_receta' } })
+  await prisma.producto_Ingrediente.create({ data: { productoId: prodS4.id, ingredienteId: ingA4.id, cantidad: 1 } })
+  const modS4 = await prisma.modificador.create({
+    data: { nombre: 'ModSustituir4', tipo: 'Sustituir', ingredienteAfectadoId: ingA4.id, ingredienteSustitutoId: ingB4.id, cantidadSustituto: 3 },
+  })
+  await prisma.producto_Modificador.create({ data: { productoId: prodS4.id, modificadorId: modS4.id } })
+  const comboS4 = await prisma.combo.create({ data: { nombre: 'ComboS4', precioEspecial: 30 } })
+  await prisma.combo_Producto.create({ data: { comboId: comboS4.id, productoId: prodS4.id, cantidad: 1 } })
+
+  const stockIngA4_0 = await stockIngrediente(ingA4.id)
+  const stockIngB4_0 = await stockIngrediente(ingB4.id)
+  const pComboS4 = await req('POST', '/api/pedidos', {
+    tipo: 'Para_recoger', origen: 'Telefono', nombreClienteLibre: 'Combo Sustituir 4',
+    productos: [{ comboId: comboS4.id, cantidad: 1, productos: [{ productoId: prodS4.id, modificadores: [{ modificadorId: modS4.id }] }] }],
+    metodoPago: 'Efectivo', montoReferenciaPago: 100,
+    usuarioId: admin.id,
+  })
+  ok(pComboS4.status === 201 && pComboS4.data.estadoPago === 'Pendiente_pago', 'pedido combo+Sustituir -> Pendiente_pago')
+  ok((await stockIngrediente(ingA4.id)) === stockIngA4_0, 'reserva al CREAR NO descuenta el ingrediente afectado A (se elimina de la receta)')
+  ok((await stockIngrediente(ingB4.id)) === stockIngB4_0 - 3, 'reserva al CREAR descuenta el sustituto B (cantidadSustituto 3)')
+  const pagarComboS4 = await req('PATCH', `/api/pedidos/${pComboS4.data.id}/estado-pago`, { estadoPago: 'Pagado', usuarioId: admin.id })
+  ok(pagarComboS4.status === 200, 'pago del combo+Sustituir')
+  ok((await stockIngrediente(ingB4.id)) === stockIngB4_0 - 3, 'pagar NO vuelve a descontar el sustituto (reserva ya hecha)')
+
+  console.log('== Pedido viejo sin reserva: al pagarse valida stock (no descuenta a ciegas) ==')
+  // Simula un pedido creado ANTES del rediseño de reserva (commit 2f87347):
+  // se borran sus movimientos de reserva y el stock del ingrediente ya se
+  // consumió en otra venta. Al pagarse se valida el stock como una venta
+  // normal: 409 con faltantes y, con usarDisponible, descuento topeado (nunca
+  // negativo).
+  const ingR4 = await prisma.ingrediente.create({ data: { nombre: 'IngR4', unidadMedida: 'kg', stockActual: 1, stockMinimoAlerta: 0 } })
+  await prisma.movimiento_Inventario.create({ data: { ingredienteId: ingR4.id, tipoMovimiento: 'Entrada', cantidad: 1 } })
+  const prodR4 = await prisma.producto.create({ data: { nombre: 'ProdR4', precio: 20, tipo: 'Con_receta' } })
+  await prisma.producto_Ingrediente.create({ data: { productoId: prodR4.id, ingredienteId: ingR4.id, cantidad: 1 } })
+  const pR4 = await req('POST', '/api/pedidos', {
+    tipo: 'Para_recoger', origen: 'Telefono', nombreClienteLibre: 'Viejo sin reserva 4',
+    productos: [{ productoId: prodR4.id, cantidad: 1 }],
+    metodoPago: 'Efectivo', montoReferenciaPago: 100,
+    usuarioId: admin.id,
+  })
+  ok(pR4.status === 201 && pR4.data.estadoPago === 'Pendiente_pago', 'pedido creado Pendiente_pago (con reserva)')
+  ok((await stockIngrediente(ingR4.id)) === 0, 'reserva al crear: stock 1 - 1 = 0')
+  const borradosR4 = await prisma.movimiento_Inventario.deleteMany({
+    where: { pedidoProductoId: { in: pR4.data.productos.map((x) => x.id) }, ventaProductoId: null },
+  })
+  ok(borradosR4.count > 0, 'reserva eliminada -> el pedido simula ser pre-rediseño (sin movimientos)')
+  await prisma.movimiento_Inventario.create({ data: { ingredienteId: ingR4.id, tipoMovimiento: 'Salida_venta', cantidad: -1 } })
+  ok((await stockIngrediente(ingR4.id)) === 0, 'el ingrediente ya se consumió en otra venta (disponible 0)')
+  const pagoViejoR4 = await req('PATCH', `/api/pedidos/${pR4.data.id}/estado-pago`, { estadoPago: 'Pagado', usuarioId: admin.id })
+  ok(pagoViejoR4.status === 409, 'pagar pedido viejo sin stock -> 409 (NO descuenta a ciegas)')
+  ok(
+    Array.isArray(pagoViejoR4.data?.stockInsuficiente) &&
+      pagoViejoR4.data.stockInsuficiente.some((f) => f.id === ingR4.id && f.requerido === 1 && f.disponible === 0),
+    '409 reporta el faltante (requerido 1, disponible 0)'
+  )
+  ok((await stockIngrediente(ingR4.id)) === 0, 'sin usarDisponible el stock sigue 0 (nada descontado)')
+  const pagoViejoR4Usar = await req('PATCH', `/api/pedidos/${pR4.data.id}/estado-pago`, { estadoPago: 'Pagado', usarDisponible: true, usuarioId: admin.id })
+  ok(pagoViejoR4Usar.status === 200 && pagoViejoR4Usar.data.pedido?.estadoPago === 'Pagado', 'con usarDisponible:true el pago procede ("Usar lo disponible")')
+  ok((await stockIngrediente(ingR4.id)) === 0, 'descuento topeado a lo disponible: stock 0 (NUNCA negativo)')
+
   // J = sin caja abierta
   await prisma.dia_Operativo.update({ where: { id: dia.id }, data: { estado: 'Cerrado' } })
   const sinCaja = await req('POST', '/api/ventas', { productos: [{ productoId: coca.id, cantidad: 1 }], metodoPago: 'Efectivo', usuarioId: admin.id })
   ok(sinCaja.status === 409 && /caja/i.test(sinCaja.data.message), 'venta sin caja abierta -> 409')
+
+  console.log('== Cancelar pedido Pagado en Efectivo: devolución con medio Efectivo_de_caja ==')
+  const estRefund = await req('GET', '/api/caja/estado')
+  if (estRefund.data?.abierta) {
+    await req('POST', '/api/caja/cerrar', { efectivoContado: 0, usuarioId: admin.id })
+  }
+  const abrirRefund = await req('POST', '/api/caja/abrir', { fondoInicial: 0, usuarioId: admin.id })
+  ok(abrirRefund.status === 201 && abrirRefund.data.diaOperativo.estado === 'Abierto', 'abrir caja fresca (fondo 0) para el caso de devolución')
+  const prodRefund = await prisma.producto.create({ data: { nombre: 'ProdRefund', precio: 20, tipo: 'Reventa_directa' } })
+  await prisma.movimiento_Inventario.create({ data: { productoId: prodRefund.id, tipoMovimiento: 'Entrada', cantidad: 10 } })
+  const pRefund = await req('POST', '/api/pedidos', {
+    tipo: 'Para_recoger', origen: 'Mostrador', nombreClienteLibre: 'RefundCash',
+    productos: [{ productoId: prodRefund.id, cantidad: 1 }],
+    metodoPago: 'Efectivo', montoReferenciaPago: 100, usuarioId: admin.id,
+  })
+  ok(pRefund.status === 201 && pRefund.data.estadoPago === 'Pagado' && pRefund.data.total === 20, 'pedido de Mostrador pagado al capturar (total 20)')
+  const cancelRefund = await req('PATCH', `/api/pedidos/${pRefund.data.id}/estado-preparacion`, {
+    estadoPreparacion: 'Cancelado', regresaAInventario: false, devolverDinero: true, medioDevolucion: 'Efectivo_de_caja',
+  })
+  ok(cancelRefund.status === 200 && cancelRefund.data.pedido.estadoPreparacion === 'Cancelado', 'cancelar pedido Pagado con devolución -> Cancelado')
+  ok(cancelRefund.data.devolucion && cancelRefund.data.devolucion.monto === 20 && cancelRefund.data.devolucion.medioDevolucion === 'Efectivo_de_caja', 'devolución por 20 con medio Efectivo_de_caja')
+  const devRefund = await prisma.devolucion.findFirst({ where: { ventaId: pRefund.data.venta.id } })
+  ok(devRefund && devRefund.monto === 20 && devRefund.medioDevolucion === 'Efectivo_de_caja' && devRefund.motivo === 'Cancelacion_pedido', 'Devolución guardada: motivo Cancelacion_pedido, medio Efectivo_de_caja, monto 20')
+  const cerrarRefund = await req('POST', '/api/caja/cerrar', { efectivoContado: 0, usuarioId: admin.id })
+  ok(cerrarRefund.status === 200 && cerrarRefund.data.cierre.efectivoEsperado === 0, 'efectivo esperado = 0 (venta 20 - devolución Efectivo_de_caja 20)')
+  ok(cerrarRefund.data.devolucionesEfectivoCaja === 20, 'resumen de caja reporta 20 en "Devoluciones en efectivo"')
+  ok(cerrarRefund.data.cierre.diferencia === 0, 'diferencia = 0 (contado 0)')
+
+  console.log('== Regresión confirmarPedido: click normal -> 409; solo "Usar lo disponible" -> 201 ==')
+  const estReg = await req('GET', '/api/caja/estado')
+  if (estReg.data?.abierta) {
+    await req('POST', '/api/caja/cerrar', { efectivoContado: 0, usuarioId: admin.id })
+  }
+  const abrirReg = await req('POST', '/api/caja/abrir', { fondoInicial: 0, usuarioId: admin.id })
+  ok(abrirReg.status === 201 && abrirReg.data.diaOperativo.estado === 'Abierto', 'abrir caja fresca para la regresión de confirmarPedido')
+  const prodReg = await prisma.producto.create({ data: { nombre: 'ProdRegClick', precio: 15, tipo: 'Reventa_directa' } })
+  await prisma.movimiento_Inventario.create({ data: { productoId: prodReg.id, tipoMovimiento: 'Entrada', cantidad: 1 } })
+  const clickNormal = await req('POST', '/api/pedidos', {
+    tipo: 'Para_recoger', origen: 'Mostrador', nombreClienteLibre: 'ClickNormal',
+    productos: [{ productoId: prodReg.id, cantidad: 2 }],
+    metodoPago: 'Efectivo', montoReferenciaPago: 100, usuarioId: admin.id,
+  })
+  ok(clickNormal.status === 409 && /stock insuficiente|disponible/i.test(clickNormal.data?.message || ''), 'click normal (sin usarDisponible) -> 409: nunca vende con stock insuficiente')
+  ok((await stockProducto(prodReg.id)) === 1, 'el click normal NO descontó nada (stock sigue 1)')
+  const clickUsar = await req('POST', '/api/pedidos', {
+    tipo: 'Para_recoger', origen: 'Mostrador', nombreClienteLibre: 'ClickUsar',
+    productos: [{ productoId: prodReg.id, cantidad: 2 }],
+    metodoPago: 'Efectivo', montoReferenciaPago: 100, usarDisponible: true, usuarioId: admin.id,
+  })
+  ok(clickUsar.status === 201 && clickUsar.data.estadoPago === 'Pagado', '"Usar lo disponible" (usarDisponible:true) -> 201, vende solo lo que hay')
+  ok((await stockProducto(prodReg.id)) === 0, 'descuento topeado a lo disponible: stock 0 (NUNCA negativo)')
 
   console.log(`\nResultado: ${fallas === 0 ? 'TODAS LAS PRUEBAS PASARON' : fallas + ' prueba(s) fallaron'}`)
 } catch (e) {
@@ -459,6 +628,10 @@ try {
     await tx.venta_Producto_Mitad.deleteMany()
     await tx.venta_Producto.deleteMany()
     await tx.venta.deleteMany()
+    await tx.pedido_Producto_Modificador.deleteMany()
+    await tx.pedido_Producto_Mitad.deleteMany()
+    await tx.pedido_Producto.deleteMany()
+    await tx.pedido.deleteMany()
     await tx.movimiento_Inventario.deleteMany()
     await tx.combo_Producto.deleteMany()
     await tx.combo.deleteMany()

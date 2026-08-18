@@ -258,7 +258,7 @@ function ModalFormularioAbrir({ fondoInicial, productos, combos, onCerrar, onGua
             size="md"
             className="w-full"
             disabled={enviando}
-            onClick={confirmar}
+            onClick={() => confirmar()}
           >
             {enviando ? 'Abriendo…' : 'Abrir caja'}
           </Button>
@@ -404,7 +404,7 @@ function ModalFormularioAbrir({ fondoInicial, productos, combos, onCerrar, onGua
               <IconoMas /> Agregar venta
             </button>
           </div>
-          <Button size="md" className="w-full" disabled={enviando} onClick={confirmar}>
+          <Button size="md" className="w-full" disabled={enviando} onClick={() => confirmar()}>
             {enviando ? 'Abriendo…' : 'Abrir caja y registrar ventas'}
           </Button>
         </div>
@@ -501,7 +501,7 @@ function ModalFormularioCierre({ onCerrar, onGuardar }) {
         </button>
         <button
           type="button"
-          onClick={confirmar}
+          onClick={() => confirmar()}
           disabled={enviando}
           className="inline-flex min-h-12 flex-1 select-none items-center justify-center gap-2 rounded-full bg-accent px-5 py-3 text-base font-semibold text-white shadow-[0_4px_14px_rgb(0_122_255/0.35)] transition duration-150 ease-out active:scale-[0.97] focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/40 disabled:opacity-50"
         >
@@ -589,7 +589,7 @@ function ModalCompletarCorte({ corte, desglose, onCerrar, onGuardar }) {
         </button>
         <button
           type="button"
-          onClick={confirmar}
+          onClick={() => confirmar()}
           disabled={enviando}
           className="inline-flex min-h-12 flex-1 select-none items-center justify-center gap-2 rounded-full bg-accent px-5 py-3 text-base font-semibold text-white shadow-[0_4px_14px_rgb(0_122_255/0.35)] transition duration-150 ease-out active:scale-[0.97] focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/40 disabled:opacity-50"
         >

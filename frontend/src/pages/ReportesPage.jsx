@@ -17,13 +17,15 @@ const ETIQUETAS_METODO_PAGO = {
 
 const ETIQUETAS_MEDIO_DEVOLUCION = {
   ...ETIQUETAS_METODO_PAGO,
-  Efectivo_de_caja: 'Efectivo de caja',
+  Efectivo: 'Efectivo (fuera de esta caja / ya cerrada)',
+  Efectivo_de_caja: 'Efectivo (se resta de esta caja)',
 }
 
 const ETIQUETAS_MOTIVO_DEVOLUCION = {
   Producto_mal_estado: 'Producto en mal estado',
   Pedido_incorrecto: 'Pedido incorrecto',
   Cliente_insatisfecho: 'Cliente insatisfecho',
+  Cancelacion_pedido: 'Cancelación de pedido',
   Otro: 'Otro',
 }
 
