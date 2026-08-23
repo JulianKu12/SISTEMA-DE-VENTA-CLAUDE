@@ -426,19 +426,19 @@ try {
 
   console.log('== Reportes de ventas (GET /api/ventas) ==')
   const listVentas = await req('GET', '/api/ventas')
-  ok(listVentas.status === 200 && Array.isArray(listVentas.data) && listVentas.data.length >= 4, 'listar ventas (admin)')
-  ok(listVentas.data.every((v) => v.usuario && Array.isArray(v.productos) && v.diaOperativo), 'cada venta incluye usuario, productos y dia_operativo')
+  ok(listVentas.status === 200 && Array.isArray(listVentas.data.data) && listVentas.data.data.length >= 4, 'listar ventas (admin) - response paginado {data}')
+  ok(listVentas.data.data.every((v) => v.usuario && Array.isArray(v.productos) && v.diaOperativo), 'cada venta incluye usuario, productos y dia_operativo')
 
   const filtroMetodo = await req('GET', '/api/ventas?metodoPago=Tarjeta')
-  ok(filtroMetodo.status === 200 && filtroMetodo.data.every((v) => v.metodoPago === 'Tarjeta') && filtroMetodo.data.some((v) => v.id === r2.data.venta.id), 'filtrar ventas por metodoPago')
+  ok(filtroMetodo.status === 200 && filtroMetodo.data.data.every((v) => v.metodoPago === 'Tarjeta') && filtroMetodo.data.data.some((v) => v.id === r2.data.venta.id), 'filtrar ventas por metodoPago')
 
   const filtroDia = await req('GET', `/api/ventas?diaOperativoId=${dia.id}`)
-  ok(filtroDia.status === 200 && filtroDia.data.length === listVentas.data.length, 'filtrar ventas por diaOperativoId')
+  ok(filtroDia.status === 200 && filtroDia.data.data.length === listVentas.data.data.length, 'filtrar ventas por diaOperativoId')
 
   const desdeTodo = await req('GET', `/api/ventas?fechaDesde=${encodeURIComponent('2000-01-01T00:00:00.000Z')}`)
-  ok(desdeTodo.status === 200 && desdeTodo.data.length === listVentas.data.length, 'rango de fecha: desde 2000 incluye todas')
+  ok(desdeTodo.status === 200 && desdeTodo.data.data.length === listVentas.data.data.length, 'rango de fecha: desde 2000 incluye todas')
   const hastaNada = await req('GET', `/api/ventas?fechaHasta=${encodeURIComponent('2020-01-01T00:00:00.000Z')}`)
-  ok(hastaNada.status === 200 && hastaNada.data.length === 0, 'rango de fecha: hasta 2020 no incluye ninguna')
+  ok(hastaNada.status === 200 && hastaNada.data.data.length === 0, 'rango de fecha: hasta 2020 no incluye ninguna')
   const filtroMal = await req('GET', '/api/ventas?metodoPago=Cripto')
   ok(filtroMal.status === 400, 'metodoPago inválido en filtro -> 400')
 

@@ -86,7 +86,7 @@ export async function crearGasto(payload) {
 }
 
 export async function obtenerVentas(diaOperativoId) {
-  const respuesta = await peticion(`/api/ventas?diaOperativoId=${diaOperativoId}`)
+  const respuesta = await peticion(`/api/ventas?diaOperativoId=${diaOperativoId}&todas=true`)
   if (!respuesta.ok) throw new Error(await extraerMensaje(respuesta, 'No se pudieron cargar las ventas'))
   return respuesta.json()
 }

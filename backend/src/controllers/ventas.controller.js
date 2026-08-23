@@ -1049,10 +1049,14 @@ export async function crearVentaPedido(tx, {
 
 // GET /api/ventas — reporte completo de ventas (docs/07: solo Administrador).
 // Filtros opcionales: rango de fecha (fechaDesde/fechaHasta), diaOperativoId y
-// metodoPago. Cada venta incluye sus productos congelados, el usuario que la
+// metodoPago. Paginación obligatoria: take (default 50, máx 200), skip (default 0).
+// EXCEPCIÓN: si se pasa `todas=true` Y `diaOperativoId` específico, se desactiva
+// la paginación y se devuelven TODAS las ventas de ese día (para cálculos de
+// caja/resumen de día). Un día real nunca tiene miles de ventas, así que es seguro.
+// Cada venta incluye sus productos congelados, el usuario que la
 // registró y su Dia_Operativo.
 export const listarVentas = asyncHandler(async (req, res) => {
-  const { fechaDesde, fechaHasta, diaOperativoId, metodoPago } = req.query
+  const { fechaDesde, fechaHasta, diaOperativoId, metodoPago, take, skip, todas } = req.query
   const where = {}
 
   if (fechaDesde !== undefined) {
@@ -1061,9 +1065,6 @@ export const listarVentas = asyncHandler(async (req, res) => {
     where.fechaHora = { ...(where.fechaHora ?? {}), gte: d }
   }
   if (fechaHasta !== undefined) {
-    // "Hasta" se interpreta como fin de día (inclusivo): si el valor es solo
-    // fecha (YYYY-MM-DD) se extiende a las 23:59:59.999 de ese mismo día, de
-    // modo que el filtro incluya todas las ventas de la fecha límite.
     const d = new Date(fechaHasta)
     if (Number.isNaN(d.getTime())) throw new HttpError(400, 'fechaHasta inválida (ISO 8601)')
     if (/^\d{4}-\d{2}-\d{2}$/.test(fechaHasta)) d.setUTCHours(23, 59, 59, 999)
@@ -1079,23 +1080,47 @@ export const listarVentas = asyncHandler(async (req, res) => {
     where.metodoPago = metodoPago
   }
 
-  const ventas = await prisma.venta.findMany({
-    where,
-    orderBy: { fechaHora: 'desc' },
-    include: {
-      productos: {
-        include: {
-          producto: { select: { id: true, nombre: true } },
-          combo: { select: { id: true, nombre: true } },
-          mitadYMitad: true,
-          modificadores: { include: { modificador: { select: { id: true, nombre: true } } } },
+  // Modo "todas": desactiva paginación SOLO si hay diaOperativoId específico
+  // (para cálculos de caja/resumen de día). En cualquier otro caso, paginación obligatoria.
+  const modoTodas = todas === 'true' && diaOperativoId !== undefined
+
+  let takeNum, skipNum
+  if (modoTodas) {
+    takeNum = undefined // sin límite
+    skipNum = 0
+  } else {
+    takeNum = take !== undefined ? Math.min(Math.max(Number(take), 1), 200) : 50
+    skipNum = skip !== undefined ? Math.max(Number(skip), 0) : 0
+  }
+
+  const [ventas, total] = await Promise.all([
+    prisma.venta.findMany({
+      where,
+      orderBy: { fechaHora: 'desc' },
+      ...(modoTodas ? {} : { take: takeNum, skip: skipNum }),
+      include: {
+        productos: {
+          include: {
+            producto: { select: { id: true, nombre: true } },
+            combo: { select: { id: true, nombre: true } },
+            mitadYMitad: true,
+            modificadores: { include: { modificador: { select: { id: true, nombre: true } } } },
+          },
         },
+        usuario: { select: { id: true, tipo: true, nombre: true, usuario: true } },
+        diaOperativo: { select: { id: true, estado: true, fechaApertura: true } },
       },
-      usuario: { select: { id: true, tipo: true, nombre: true, usuario: true } },
-      diaOperativo: { select: { id: true, estado: true, fechaApertura: true } },
-    },
-  })
-  res.json(ventas)
+    }),
+    prisma.venta.count({ where }),
+  ])
+
+  if (modoTodas) {
+    // Respuesta compatible con consumidores que esperan array plano (cálculos de caja)
+    res.json(ventas)
+  } else {
+    // Respuesta paginada para ReportesPage
+    res.json({ data: ventas, total, take: takeNum, skip: skipNum })
+  }
 })
 
 // GET /api/ventas/:id — detalle de una Venta individual incluyendo sus

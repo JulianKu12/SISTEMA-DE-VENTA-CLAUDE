@@ -194,7 +194,7 @@ try {
   const ncComoRep = await req('GET', '/api/ventas/no-cobrar', undefined, tokenRep)
   ok(ncComoRep.status === 403, 'repartidor -> GET /api/ventas/no-cobrar 403')
   const ventasComoAdmin = await req('GET', '/api/ventas', undefined, tokenAdmin)
-  ok(ventasComoAdmin.status === 200 && Array.isArray(ventasComoAdmin.data) && ventasComoAdmin.data.length >= 1, 'admin -> GET /api/ventas 200 con ventas')
+  ok(ventasComoAdmin.status === 200 && Array.isArray(ventasComoAdmin.data.data) && ventasComoAdmin.data.data.length >= 1, 'admin -> GET /api/ventas 200 con ventas (paginado)')
   const ncComoAdmin = await req('GET', '/api/ventas/no-cobrar', undefined, tokenAdmin)
   ok(ncComoAdmin.status === 200 && ncComoAdmin.data.some((v) => v.id === ventaNoCobrar.data.venta.id && Array.isArray(v.productos) && v.productos[0].producto && typeof v.productos[0].costo === 'number' && v.usuario), 'admin -> GET /api/ventas/no-cobrar 200 (producto, costo, usuario)')
 
@@ -256,7 +256,7 @@ try {
     `la venta generada queda vinculada al pedido #${pedidoSinNC.data.id} (venta.pedidoId === pedido.id)`
   )
   const repVentas = await req('GET', '/api/ventas', undefined, tokenAdmin)
-  const filaReporte = (repVentas.data || []).find((v) => v.id === propioPago.data.venta.id)
+  const filaReporte = (repVentas.data.data || []).find((v) => v.id === propioPago.data.venta.id)
   ok(
     filaReporte && filaReporte.pedidoId === pedidoSinNC.data.id,
     'reporte de ventas expone el mismo número de pedido del panel para esa venta'

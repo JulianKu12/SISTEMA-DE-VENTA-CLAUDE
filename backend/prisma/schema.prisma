@@ -275,6 +275,8 @@ model Venta {
   diaOperativo   Dia_Operativo    @relation(fields: [diaOperativoId], references: [id])
   productos      Venta_Producto[]
   devoluciones   Devolucion[]
+
+  @@index([diaOperativoId, fechaHora])
 }
 
 model Venta_Producto {

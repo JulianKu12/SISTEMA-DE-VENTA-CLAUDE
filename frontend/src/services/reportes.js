@@ -28,8 +28,16 @@ export function listarVentas(consulta = {}) {
   for (const [clave, valor] of Object.entries(consulta)) {
     if (valor !== undefined && valor !== null && valor !== '') params.set(clave, valor)
   }
+  // Añadir paginación por defecto si no se especifica (para ReportesPage)
+  if (!params.has('take')) params.set('take', '100')
+  if (!params.has('skip')) params.set('skip', '0')
   const sufijo = params.toString()
   return peticionAutenticada(`/api/ventas${sufijo ? `?${sufijo}` : ''}`)
+    .then(res => {
+      // Backend devuelve { data, total, take, skip } cuando hay paginación
+      // o array plano cuando modoTodas=true (cálculos de caja)
+      return Array.isArray(res) ? res : (res?.data ?? [])
+    })
 }
 
 export function listarNoCobrar() {
