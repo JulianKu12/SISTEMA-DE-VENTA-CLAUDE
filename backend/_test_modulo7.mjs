@@ -1,15 +1,16 @@
 import { PrismaClient } from '@prisma/client'
 import bcrypt from 'bcrypt'
 
-const prisma = new PrismaClient()
+const prisma = new PrismaClient({ datasources: { db: { url: 'file:./sec_test.db' } } })
 const BASE = 'http://localhost:3001'
 let fallas = 0
 
-function ok(cond, nombre) {
+function ok(cond, nombre, res = null) {
   if (cond) console.log(`  OK  ${nombre}`)
   else {
     fallas++
-    console.log(`FALLA ${nombre}`)
+    const extra = res ? ` | status: ${res.status} | body: ${JSON.stringify(res.data)}` : ''
+    console.log(`FALLA ${nombre}${extra}`)
   }
 }
 
@@ -47,7 +48,11 @@ async function stockProducto(id) {
   return agg._sum.cantidad ?? 0
 }
 
-const admin = await prisma.usuario.create({ data: { tipo: 'Administrador', usuario: 'admin_test7', contraseña: await bcrypt.hash('admin7', 10) } })
+const admin = await prisma.usuario.upsert({
+  where: { usuario: 'admin_test7' },
+  update: {},
+  create: { tipo: 'Administrador', usuario: 'admin_test7', contraseña: await bcrypt.hash('admin7', 10) },
+})
 
 const coca = await prisma.producto.create({ data: { nombre: 'Coca7', precio: 15, tipo: 'Reventa_directa' } })
 await prisma.movimiento_Inventario.create({ data: { productoId: coca.id, tipoMovimiento: 'Entrada', cantidad: 10 } })
@@ -55,15 +60,15 @@ await prisma.movimiento_Inventario.create({ data: { productoId: coca.id, tipoMov
 try {
   console.log('== Login ==')
   const okLogin = await login('admin_test7', 'admin7')
-  ok(okLogin.status === 200 && okLogin.token && okLogin.data.usuario.tipo === 'Administrador', 'login admin exitoso con token')
+  ok(okLogin.status === 200 && okLogin.token && okLogin.data.usuario.tipo === 'Administrador', 'login admin exitoso con token', okLogin)
   const tokenAdmin = okLogin.token
   const tokenGuardado = await prisma.usuario.findUnique({ where: { id: admin.id }, select: { tokenSesion: true } })
-  ok(tokenGuardado.tokenSesion === tokenAdmin, 'token_sesion guardado en Usuario')
+  ok(tokenGuardado.tokenSesion === tokenAdmin, 'token_sesion guardado en Usuario', okLogin)
 
   const malLogin = await login('admin_test7', 'contraseña-incorrecta')
-  ok(malLogin.status === 401, 'login fallido -> 401')
+  ok(malLogin.status === 401, 'login fallido -> 401', malLogin)
   const sinBody = await req('POST', '/api/auth/login', {})
-  ok(sinBody.status === 400, 'login sin credenciales -> 400')
+  ok(sinBody.status === 400, 'login sin credenciales -> 400', sinBody)
 
   console.log('== Contraseñas hasheadas con bcrypt ==')
   const adminDb = await prisma.usuario.findUnique({ where: { id: admin.id } })

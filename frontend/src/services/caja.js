@@ -90,3 +90,15 @@ export async function obtenerVentas(diaOperativoId) {
   if (!respuesta.ok) throw new Error(await extraerMensaje(respuesta, 'No se pudieron cargar las ventas'))
   return respuesta.json()
 }
+
+export async function listarIngresosManuales() {
+  const respuesta = await peticion('/api/ingresos-manuales')
+  if (!respuesta.ok) throw new Error(await extraerMensaje(respuesta, 'No se pudieron cargar los ingresos manuales'))
+  return respuesta.json()
+}
+
+export async function crearIngresoManual(payload) {
+  const respuesta = await peticion('/api/ingresos-manuales', { metodo: 'POST', body: payload })
+  if (!respuesta.ok) throw await construirError(respuesta, 'No se pudo registrar el ingreso manual')
+  return respuesta.json()
+}

@@ -82,7 +82,7 @@ export const abrirCaja = asyncHandler(async (req, res) => {
 // - Gasto(monto Efectivo) - Devolucion(monto Efectivo_de_caja). Se usa tanto
 // al cerrar la caja como al completar un corte que quedó sin efectivoContado.
 async function calcularDesglose(dia) {
-  const [aggVentas, aggGastos, aggGastosTarjeta, aggGastosTransferencia, aggDevoluciones, aggTarjeta, aggTransferencia] =
+  const [aggVentas, aggGastos, aggGastosTarjeta, aggGastosTransferencia, aggDevoluciones, aggTarjeta, aggTransferencia, aggIngresosEfectivo] =
     await Promise.all([
       prisma.venta.aggregate({
         _sum: { total: true },
@@ -127,6 +127,10 @@ async function calcularDesglose(dia) {
           esVentaPreviaApertura: false,
         },
       }),
+      prisma.ingresoManual.aggregate({
+        _sum: { monto: true },
+        where: { diaOperativoId: dia.id, metodoPago: 'Efectivo' },
+      }),
     ])
 
   const ventasEfectivo = aggVentas._sum.total ?? 0
@@ -136,6 +140,7 @@ async function calcularDesglose(dia) {
   const devolucionesEfectivoCaja = aggDevoluciones._sum.monto ?? 0
   const ventasTarjeta = aggTarjeta._sum.total ?? 0
   const ventasTransferencia = aggTransferencia._sum.total ?? 0
+  const ingresosEfectivo = aggIngresosEfectivo._sum.monto ?? 0
 
   return {
     ventasEfectivo,
@@ -145,7 +150,8 @@ async function calcularDesglose(dia) {
     gastosTarjeta,
     gastosTransferencia,
     devolucionesEfectivoCaja,
-    efectivoEsperado: dia.fondoInicial + ventasEfectivo - gastosEfectivo - devolucionesEfectivoCaja,
+    ingresosEfectivo,
+    efectivoEsperado: dia.fondoInicial + ventasEfectivo - gastosEfectivo - devolucionesEfectivoCaja + ingresosEfectivo,
   }
 }
 
@@ -215,6 +221,7 @@ export const cerrarCaja = asyncHandler(async (req, res) => {
       transferencia: resultado.gastosTransferencia,
     },
     devolucionesEfectivoCaja: resultado.devolucionesEfectivoCaja,
+    ingresosEfectivo: resultado.ingresosEfectivo,
     // Aviso informativo: pedidos sin resolver al momento de cerrar.
     pedidosPendientesPago: {
       cantidad: resultado.pedidosPendientes,
@@ -283,6 +290,7 @@ export const completarCorte = asyncHandler(async (req, res) => {
       transferencia: resultado.gastosTransferencia,
     },
     devolucionesEfectivoCaja: resultado.devolucionesEfectivoCaja,
+    ingresosEfectivo: resultado.ingresosEfectivo,
   })
 })
 

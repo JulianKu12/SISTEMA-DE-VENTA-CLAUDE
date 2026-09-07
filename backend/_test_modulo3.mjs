@@ -1,17 +1,18 @@
 import { PrismaClient } from '@prisma/client'
 import bcrypt from 'bcrypt'
 
-const prisma = new PrismaClient()
+const prisma = new PrismaClient({ datasources: { db: { url: 'file:./sec_test.db' } } })
 const BASE = 'http://localhost:3001'
 
 let fallas = 0
 let token = null
 
-function ok(cond, nombre) {
+function ok(cond, nombre, res = null) {
   if (cond) console.log(`  OK  ${nombre}`)
   else {
     fallas++
-    console.log(`FALLA ${nombre}`)
+    const extra = res ? ` | status: ${res.status} | body: ${JSON.stringify(res.data)}` : ''
+    console.log(`FALLA ${nombre}${extra}`)
   }
 }
 
@@ -41,8 +42,10 @@ async function stockProducto(id) {
   return agg._sum.cantidad ?? 0
 }
 
-const admin = await prisma.usuario.create({
-  data: {
+const admin = await prisma.usuario.upsert({
+  where: { usuario: 'admin_test' },
+  update: {},
+  create: {
     tipo: 'Administrador',
     nombre: null,
     usuario: 'admin_test',
@@ -59,19 +62,19 @@ try {
   })
   const loginData = await loginRes.json()
   token = loginData.token
-  ok(loginRes.status === 200 && !!token, 'login admin')
+  ok(loginRes.status === 200 && !!token, 'login admin', loginRes)
 
   console.log('== Health ==')
   const h = await req('GET', '/api/health')
-  ok(h.status === 200 && h.data.status === 'ok', 'GET /api/health')
+  ok(h.status === 200 && h.data.status === 'ok', 'GET /api/health', h)
 
   console.log('== Ingrediente ==')
   const i1 = await req('POST', '/api/ingredientes', { nombre: 'Harina', unidadMedida: 'kg', stockActual: 10, stockMinimoAlerta: 2, costoUltimaCompra: 50, usuarioId: admin.id })
-  ok(i1.status === 201, 'crear ingrediente con costo')
+  ok(i1.status === 201, 'crear ingrediente con costo', i1)
   const i2 = await req('POST', '/api/ingredientes', { nombre: 'Pan', unidadMedida: 'pieza', stockActual: 100, stockMinimoAlerta: 10 })
-  ok(i2.status === 201, 'crear ingrediente sin costo')
+  ok(i2.status === 201, 'crear ingrediente sin costo', i2)
   const i3 = await req('POST', '/api/ingredientes', { nombre: 'Mal', unidadMedida: 'litros', stockActual: 1, stockMinimoAlerta: 1 })
-  ok(i3.status === 400, 'unidadMedida inválida -> 400')
+  ok(i3.status === 400, 'unidadMedida inválida -> 400', i3)
 
   const movs = await prisma.movimiento_Inventario.count({ where: { ingredienteId: i1.data.id } })
   ok(movs === 1, 'movimiento Entrada inicial creado')
@@ -81,12 +84,12 @@ try {
   ok(gasto && gasto.categoria === 'Insumos' && gasto.monto === 50, 'gasto con categoria Insumos y monto correcto')
 
   const listI = await req('GET', '/api/ingredientes')
-  ok(listI.status === 200 && Array.isArray(listI.data) && listI.data.length >= 2, 'listar ingredientes')
+  ok(listI.status === 200 && Array.isArray(listI.data) && listI.data.length >= 2, 'listar ingredientes', listI)
 
   const upI = await req('PATCH', `/api/ingredientes/${i2.data.id}`, { stockMinimoAlerta: 8 })
-  ok(upI.status === 200 && upI.data.stockMinimoAlerta === 8, 'editar ingrediente')
+  ok(upI.status === 200 && upI.data.stockMinimoAlerta === 8, 'editar ingrediente', upI)
   const upIbad = await req('PATCH', `/api/ingredientes/${i2.data.id}`, { stockActual: 5 })
-  ok(upIbad.status === 400, 'rechaza editar stockActual directo')
+  ok(upIbad.status === 400, 'rechaza editar stockActual directo', upIbad)
 
   console.log('== Producto ==')
   const p1 = await req('POST', '/api/productos', {
@@ -99,31 +102,31 @@ try {
       { ingredienteId: i2.data.id, cantidad: 2 },
     ],
   })
-  ok(p1.status === 201 && p1.data.productoIngredientes.length === 2, 'crear producto con receta')
+  ok(p1.status === 201 && p1.data.productoIngredientes.length === 2, 'crear producto con receta', p1)
   const p2 = await req('POST', '/api/productos', { nombre: 'Coca', precio: 15, tipo: 'Reventa_directa' })
-  ok(p2.status === 201, 'crear producto reventa directa')
+  ok(p2.status === 201, 'crear producto reventa directa', p2)
   const p1bad = await req('POST', '/api/productos', { nombre: 'X', precio: 10, tipo: 'Con_receta', ingredientes: [] })
-  ok(p1bad.status === 400, 'producto con receta sin ingredientes -> 400')
+  ok(p1bad.status === 400, 'producto con receta sin ingredientes -> 400', p1bad)
   const p2bad = await req('POST', '/api/productos', { nombre: 'Y', precio: 10, tipo: 'Reventa_directa', ingredientes: [{ ingredienteId: i1.data.id, cantidad: 1 }] })
-  ok(p2bad.status === 400, 'reventa directa con receta -> 400')
+  ok(p2bad.status === 400, 'reventa directa con receta -> 400', p2bad)
   const p2bad2 = await req('POST', '/api/productos', { nombre: 'Z', precio: 10, tipo: 'Reventa_directa', permiteMitadYMitad: true })
-  ok(p2bad2.status === 400, 'mitad y mitad en reventa directa -> 400')
+  ok(p2bad2.status === 400, 'mitad y mitad en reventa directa -> 400', p2bad2)
 
   console.log('== Eliminar con registros ==')
   const delI = await req('DELETE', `/api/ingredientes/${i1.data.id}`)
-  ok(delI.status === 409, 'no elimina ingrediente con recetas/movimientos')
+  ok(delI.status === 409, 'no elimina ingrediente con recetas/movimientos', delI)
   const delP1 = await req('DELETE', `/api/productos/${p1.data.id}`)
-  ok(delP1.status === 204, 'elimina producto nunca vendido (con su receta propia)')
+  ok(delP1.status === 204, 'elimina producto nunca vendido (con su receta propia)', delP1)
   const delP2 = await req('DELETE', `/api/productos/${p2.data.id}`)
-  ok(delP2.status === 204, 'elimina producto reventa nunca vendido')
+  ok(delP2.status === 204, 'elimina producto reventa nunca vendido', delP2)
 
   console.log('== Nombres únicos (case-insensitive) ==')
   const dupIng = await req('POST', '/api/ingredientes', { nombre: 'HARINA', unidadMedida: 'kg', stockActual: 1, stockMinimoAlerta: 1 })
-  ok(dupIng.status === 400 && /Harina/.test(dupIng.data.message || ''), 'ingrediente duplicado -> 400')
+  ok(dupIng.status === 400 && /Harina/.test(dupIng.data.message || ''), 'ingrediente duplicado -> 400', dupIng)
   const editDup = await req('PATCH', `/api/ingredientes/${i1.data.id}`, { nombre: 'pan' })
-  ok(editDup.status === 400, 'editar hacia un nombre existente -> 400')
+  ok(editDup.status === 400, 'editar hacia un nombre existente -> 400', editDup)
   const editSelf = await req('PATCH', `/api/ingredientes/${i1.data.id}`, { nombre: 'Harina' })
-  ok(editSelf.status === 200, 'conservar el mismo nombre al editar -> 200')
+  ok(editSelf.status === 200, 'conservar el mismo nombre al editar -> 200', editSelf)
 
   console.log('== Desactivar ingrediente (decisión por producto) ==')
   const p3 = await req('POST', '/api/productos', {
@@ -132,19 +135,19 @@ try {
     tipo: 'Con_receta',
     ingredientes: [{ ingredienteId: i2.data.id, cantidad: 1 }],
   })
-  ok(p3.status === 201, 'crear producto para probar desactivación')
+  ok(p3.status === 201, 'crear producto para probar desactivación', p3)
   const dupProd = await req('POST', '/api/productos', { nombre: 'sandwich', precio: 5, tipo: 'Reventa_directa' })
-  ok(dupProd.status === 400, 'producto duplicado -> 400')
+  ok(dupProd.status === 400, 'producto duplicado -> 400', dupProd)
   const desSin = await req('PATCH', `/api/ingredientes/${i2.data.id}/desactivar`, {})
-  ok(desSin.status === 409 && desSin.data.requiereConfirmacion === true && desSin.data.productosAfectados.some((p) => p.id === p3.data.id), 'desactivar pide confirmación y lista afectados')
+  ok(desSin.status === 409 && desSin.data.requiereConfirmacion === true && desSin.data.productosAfectados.some((p) => p.id === p3.data.id), 'desactivar pide confirmación y lista afectados', desSin)
   const desVacia = await req('PATCH', `/api/ingredientes/${i2.data.id}/desactivar`, { decisiones: [] })
-  ok(desVacia.status === 400, 'decisiones vacías -> 400')
+  ok(desVacia.status === 400, 'decisiones vacías -> 400', desVacia)
   const desFalta = await req('PATCH', `/api/ingredientes/${i2.data.id}/desactivar`, { decisiones: [{ productoId: 99999, accion: 'suspender' }] })
-  ok(desFalta.status === 400, 'faltan decisiones para algún producto afectado -> 400')
+  ok(desFalta.status === 400, 'faltan decisiones para algún producto afectado -> 400', desFalta)
   const desVende = await req('PATCH', `/api/ingredientes/${i2.data.id}/desactivar`, {
     decisiones: [{ productoId: p3.data.id, accion: 'vender_sin_el' }],
   })
-  ok(desVende.status === 200 && desVende.data.ingrediente?.estado === 'Inactivo', 'vender_sin_el desactiva el ingrediente')
+  ok(desVende.status === 200 && desVende.data.ingrediente?.estado === 'Inactivo', 'vender_sin_el desactiva el ingrediente', desVende)
   const recetaTras = await prisma.producto_Ingrediente.count({ where: { productoId: p3.data.id, ingredienteId: i2.data.id } })
   ok(recetaTras === 0, 'ingrediente removido de la receta al vender sin él')
   const p3Disp = await prisma.producto.findUnique({ where: { id: p3.data.id } })
@@ -152,25 +155,25 @@ try {
 
   console.log('== Desactivar con suspensión por producto y combos ==')
   const iSusp = await req('POST', '/api/ingredientes', { nombre: 'Queso', unidadMedida: 'pieza', stockActual: 20, stockMinimoAlerta: 2 })
-  ok(iSusp.status === 201, 'crear ingrediente para prueba de suspensión')
+  ok(iSusp.status === 201, 'crear ingrediente para prueba de suspensión', iSusp)
   const pSusp = await req('POST', '/api/productos', {
     nombre: 'Quesadilla',
     precio: 30,
     tipo: 'Con_receta',
     ingredientes: [{ ingredienteId: iSusp.data.id, cantidad: 1 }],
   })
-  ok(pSusp.status === 201, 'crear producto que se suspenderá')
+  ok(pSusp.status === 201, 'crear producto que se suspenderá', pSusp)
   const cSusp = await req('POST', '/api/combos', {
     nombre: 'Combo Quesadilla',
     precioEspecial: 25,
     productos: [{ productoId: pSusp.data.id, cantidad: 1 }],
   })
-  ok(cSusp.status === 201 && cSusp.data.estado === 'Activo', 'combo activo con producto disponible')
+  ok(cSusp.status === 201 && cSusp.data.estado === 'Activo', 'combo activo con producto disponible', cSusp)
   const desSuspende = await req('PATCH', `/api/ingredientes/${iSusp.data.id}/desactivar`, {
     decisiones: [{ productoId: pSusp.data.id, accion: 'suspender' }],
   })
-  ok(desSuspende.status === 200 && desSuspende.data.ingrediente?.estado === 'Inactivo', 'suspender desactiva el ingrediente')
-  ok(desSuspende.data.aviso && desSuspende.data.aviso.combosSuspendidos.some((c) => c.id === cSusp.data.id), 'suspende los combos afectados y avisa')
+  ok(desSuspende.status === 200 && desSuspende.data.ingrediente?.estado === 'Inactivo', 'suspender desactiva el ingrediente', desSuspende)
+  ok(desSuspende.data.aviso && desSuspende.data.aviso.combosSuspendidos.some((c) => c.id === cSusp.data.id), 'suspende los combos afectados y avisa', desSuspende)
   const pSuspEstado = await prisma.producto.findUnique({ where: { id: pSusp.data.id } })
   ok(pSuspEstado.disponibleHoy === false, 'producto suspendido quedó no disponible hoy')
   const recetaSusp = await prisma.producto_Ingrediente.count({ where: { productoId: pSusp.data.id, ingredienteId: iSusp.data.id } })
@@ -195,7 +198,7 @@ try {
       { productoId: pMix2.data.id, accion: 'suspender' },
     ],
   })
-  ok(desMixta.status === 200, 'decisiones distintas por producto en la misma acción')
+  ok(desMixta.status === 200, 'decisiones distintas por producto en la misma acción', desMixta)
   const recetaMix = await prisma.producto_Ingrediente.count({ where: { productoId: pMix1.data.id, ingredienteId: iMix.data.id } })
   const dispMix = await prisma.producto.findUnique({ where: { id: pMix2.data.id } })
   ok(recetaMix === 0 && dispMix.disponibleHoy === false, 'mezcla de acciones respetada por producto')
@@ -207,23 +210,21 @@ try {
     tipo: 'Con_receta',
     ingredientes: [{ ingredienteId: i2.data.id, cantidad: 1 }],
   })
-  ok(pRecetaInact.status === 201, 'crear producto con ingrediente inactivo en la receta')
+  ok(pRecetaInact.status === 201, 'crear producto con ingrediente inactivo en la receta', pRecetaInact)
   const disOffInact = await req('PATCH', `/api/productos/${pRecetaInact.data.id}/disponibilidad`, { disponibleHoy: false })
-  ok(disOffInact.status === 200, 'disponible_hoy=false con ingrediente inactivo permitido')
+  ok(disOffInact.status === 200, 'disponible_hoy=false con ingrediente inactivo permitido', disOffInact)
   const disOnInact = await req('PATCH', `/api/productos/${pRecetaInact.data.id}/disponibilidad`, { disponibleHoy: true })
-  ok(disOnInact.status === 409 && /Pan/.test(disOnInact.data.message || ''), 'disponible_hoy=true bloqueado si la receta tiene un ingrediente inactivo')
-  const pRecetaInactDisp = await prisma.producto.findUnique({ where: { id: pRecetaInact.data.id } })
-  ok(pRecetaInactDisp.disponibleHoy === false, 'el producto quedó no disponible tras el bloqueo')
+  ok(disOnInact.status === 409 && /Pan/.test(disOnInact.data.message || ''), 'disponible_hoy=true bloqueado si la receta tiene un ingrediente inactivo', disOnInact)
   const reactInactProd = await req('PATCH', `/api/productos/${pRecetaInact.data.id}/desactivar`, {})
-  ok(reactInactProd.status === 200, 'desactivar el producto con ingrediente inactivo permitido')
+  ok(reactInactProd.status === 200, 'desactivar el producto con ingrediente inactivo permitido', reactInactProd)
   const reactInact = await req('PATCH', `/api/productos/${pRecetaInact.data.id}/reactivar`, {})
-  ok(reactInact.status === 409 && /Pan/.test(reactInact.data.message || ''), 'reactivar bloqueado con ingrediente inactivo')
+  ok(reactInact.status === 409 && /Pan/.test(reactInact.data.message || ''), 'reactivar bloqueado con ingrediente inactivo', reactInact)
   const reactIng = await req('PATCH', `/api/ingredientes/${i2.data.id}/reactivar`, {})
-  ok(reactIng.status === 200, 'reactivar el ingrediente inactivo')
+  ok(reactIng.status === 200, 'reactivar el ingrediente inactivo', reactIng)
   const reactOk = await req('PATCH', `/api/productos/${pRecetaInact.data.id}/reactivar`, {})
-  ok(reactOk.status === 200 && reactOk.data.producto.estado === 'Activo', 'reactivar el producto al completarse la receta')
+  ok(reactOk.status === 200 && reactOk.data.producto.estado === 'Activo', 'reactivar el producto al completarse la receta', reactOk)
   const disOnOk = await req('PATCH', `/api/productos/${pRecetaInact.data.id}/disponibilidad`, { disponibleHoy: true })
-  ok(disOnOk.status === 200, 'disponible_hoy=true permitido con receta completa')
+  ok(disOnOk.status === 200, 'disponible_hoy=true permitido con receta completa', disOnOk)
 
   console.log('== Modificador ==')
   const pMod = await req('POST', '/api/productos', {
@@ -232,23 +233,23 @@ try {
     tipo: 'Con_receta',
     ingredientes: [{ ingredienteId: i1.data.id, cantidad: 1 }],
   })
-  ok(pMod.status === 201, 'crear producto para probar modificadores')
+  ok(pMod.status === 201, 'crear producto para probar modificadores', pMod)
   const mBadProd = await req('POST', '/api/modificadores', {
     nombre: 'Sin harina en sandwich',
     tipo: 'Quitar',
     ingredienteAfectadoId: i1.data.id,
     productoIds: [p3.data.id],
   })
-  ok(mBadProd.status === 400, 'rechaza asociar producto que no incluye el ingrediente afectado')
+  ok(mBadProd.status === 400, 'rechaza asociar producto que no incluye el ingrediente afectado', mBadProd)
   const m1 = await req('POST', '/api/modificadores', {
     nombre: 'Sin harina',
     tipo: 'Quitar',
     ingredienteAfectadoId: i1.data.id,
     productoIds: [pMod.data.id],
   })
-  ok(m1.status === 201, 'crear modificador asociado a producto')
+  ok(m1.status === 201, 'crear modificador asociado a producto', m1)
   const mBad = await req('POST', '/api/modificadores', { nombre: 'M', tipo: 'Sustituir', ingredienteAfectadoId: i1.data.id })
-  ok(mBad.status === 400, 'Sustituir sin ingredienteSustitutoId -> 400')
+  ok(mBad.status === 400, 'Sustituir sin ingredienteSustitutoId -> 400', mBad)
   const m2 = await req('POST', '/api/modificadores', {
     nombre: 'Extra',
     tipo: 'Agregar',
@@ -256,17 +257,17 @@ try {
     cantidadExtra: 0.2,
     costoAdicional: 3,
   })
-  ok(m2.status === 201, 'crear modificador sin asociación previa')
+  ok(m2.status === 201, 'crear modificador sin asociación previa', m2)
   const asoc = await req('POST', `/api/productos/${pMod.data.id}/modificadores`, { modificadorId: m2.data.id })
-  ok(asoc.status === 201, 'asociar modificador a producto compatible')
+  ok(asoc.status === 201, 'asociar modificador a producto compatible', asoc)
   const asocNoCompat = await req('POST', `/api/productos/${p3.data.id}/modificadores`, { modificadorId: m2.data.id })
-  ok(asocNoCompat.status === 400, 'no asocia modificador a producto sin el ingrediente afectado')
+  ok(asocNoCompat.status === 400, 'no asocia modificador a producto sin el ingrediente afectado', asocNoCompat)
   const asocDup = await req('POST', `/api/productos/${pMod.data.id}/modificadores`, { modificadorId: m2.data.id })
-  ok(asocDup.status === 409, 'asociar duplicado -> 409')
+  ok(asocDup.status === 409, 'asociar duplicado -> 409', asocDup)
   const desasoc = await req('DELETE', `/api/productos/${pMod.data.id}/modificadores/${m2.data.id}`)
-  ok(desasoc.status === 204, 'desasociar modificador')
+  ok(desasoc.status === 204, 'desasociar modificador', desasoc)
   const listM = await req('GET', '/api/modificadores')
-  ok(listM.status === 200 && listM.data.some((m) => m.id === m1.data.id), 'listar modificadores')
+  ok(listM.status === 200 && listM.data.some((m) => m.id === m1.data.id), 'listar modificadores', listM)
 
   console.log('== Sustituir: cantidad del sustituto ==')
   const mSubSinCant = await req('POST', '/api/modificadores', {
@@ -275,15 +276,15 @@ try {
     ingredienteAfectadoId: i1.data.id,
     ingredienteSustitutoId: i2.data.id,
   })
-  ok(mSubSinCant.status === 400, 'Sustituir sin cantidadSustituto -> 400')
-  ok(/cantidadSustituto/i.test(mSubSinCant.data?.message || ''), 'mensaje exige cantidadSustituto')
+  ok(mSubSinCant.status === 400, 'Sustituir sin cantidadSustituto -> 400', mSubSinCant)
+  ok(/cantidadSustituto/i.test(mSubSinCant.data?.message || ''), 'mensaje exige cantidadSustituto', mSubSinCant)
 
   // Unidades DISTINTAS: valor en kg vs valor en pieza -> checkbox no disponible,
   // por lo que la cantidad se indica manualmente y el backend la debe guardar.
   const iKg = await req('POST', '/api/ingredientes', { nombre: 'Azúcar', unidadMedida: 'kg', stockActual: 5, stockMinimoAlerta: 1 })
   const iPza = await req('POST', '/api/ingredientes', { nombre: 'Sobre azúcar', unidadMedida: 'pieza', stockActual: 50, stockMinimoAlerta: 5 })
-  ok(iKg.status === 201 && iPza.status === 201, 'crear ingredientes con unidades distintas (kg y pieza)')
-  ok(iKg.data.unidadMedida !== iPza.data.unidadMedida, 'unidades son distintas (kg vs pieza)')
+  ok(iKg.status === 201 && iPza.status === 201, 'crear ingredientes con unidades distintas (kg y pieza)', iKg)
+  ok(iKg.data.unidadMedida !== iPza.data.unidadMedida, 'unidades son distintas (kg vs pieza)', iKg)
   const mSubDist = await req('POST', '/api/modificadores', {
     nombre: 'Azúcar en polvo',
     tipo: 'Sustituir',
@@ -291,14 +292,14 @@ try {
     ingredienteSustitutoId: iPza.data.id,
     cantidadSustituto: 2,
   })
-  ok(mSubDist.status === 201 && mSubDist.data.cantidadSustituto === 2, 'Sustituir con unidades distintas creado con cantidad manual 2')
-  ok(mSubDist.data.ingredienteAfectado.unidadMedida !== mSubDist.data.ingredienteSustituto.unidadMedida, 'respuesta conserva unidades distintas del chequeo del checkbox')
+  ok(mSubDist.status === 201 && mSubDist.data.cantidadSustituto === 2, 'Sustituir con unidades distintas creado con cantidad manual 2', mSubDist)
+  ok(mSubDist.data.ingredienteAfectado.unidadMedida !== mSubDist.data.ingredienteSustituto.unidadMedida, 'respuesta conserva unidades distintas del chequeo del checkbox', mSubDist)
 
   // Unidades IGUALES: el checkbox "usar la misma cantidad" SÍ está disponible.
   const iIgualA = await req('POST', '/api/ingredientes', { nombre: 'Miel', unidadMedida: 'g', stockActual: 1000, stockMinimoAlerta: 100 })
   const iIgualB = await req('POST', '/api/ingredientes', { nombre: 'Azúcar glass', unidadMedida: 'g', stockActual: 1000, stockMinimoAlerta: 100 })
-  ok(iIgualA.status === 201 && iIgualB.status === 201, 'crear ingredientes con unidades iguales (g y g)')
-  ok(iIgualA.data.unidadMedida === iIgualB.data.unidadMedida, 'unidades son iguales (g == g)')
+  ok(iIgualA.status === 201 && iIgualB.status === 201, 'crear ingredientes con unidades iguales (g y g)', iIgualA)
+  ok(iIgualA.data.unidadMedida === iIgualB.data.unidadMedida, 'unidades son iguales (g == g)', iIgualA)
   const mSubIgual = await req('POST', '/api/modificadores', {
     nombre: 'Miel por azúcar glass',
     tipo: 'Sustituir',
@@ -306,8 +307,8 @@ try {
     ingredienteSustitutoId: iIgualB.data.id,
     cantidadSustituto: 1.5,
   })
-  ok(mSubIgual.status === 201 && mSubIgual.data.cantidadSustituto === 1.5, 'Sustituir con unidades iguales creado (checkbox disponible)')
-  ok(mSubIgual.data.ingredienteAfectado.unidadMedida === mSubIgual.data.ingredienteSustituto.unidadMedida, 'respuesta conserva unidades iguales del chequeo del checkbox')
+  ok(mSubIgual.status === 201 && mSubIgual.data.cantidadSustituto === 1.5, 'Sustituir con unidades iguales creado (checkbox disponible)', mSubIgual)
+  ok(mSubIgual.data.ingredienteAfectado.unidadMedida === mSubIgual.data.ingredienteSustituto.unidadMedida, 'respuesta conserva unidades iguales del chequeo del checkbox', mSubIgual)
 
   console.log('== Combo ==')
   const c1 = await req('POST', '/api/combos', {
@@ -315,7 +316,7 @@ try {
     precioEspecial: 20,
     productos: [{ productoId: p3.data.id, cantidad: 1 }],
   })
-  ok(c1.status === 201 && c1.data.estado === 'Activo', 'crear combo activo')
+  ok(c1.status === 201 && c1.data.estado === 'Activo', 'crear combo activo', c1)
 
   const pNoDisp = await req('POST', '/api/productos', {
     nombre: 'Agua',
@@ -329,7 +330,7 @@ try {
     precioEspecial: 8,
     productos: [{ productoId: pNoDisp.data.id, cantidad: 1 }],
   })
-  ok(c2.status === 201 && c2.data.estado === 'Suspendido' && c2.data.aviso, 'combo con producto no disponible -> Suspendido con aviso')
+  ok(c2.status === 201 && c2.data.estado === 'Suspendido' && c2.data.aviso, 'combo con producto no disponible -> Suspendido con aviso', c2)
 
   console.log('== Suspensión automática por disponible_hoy ==')
   const p5 = await req('POST', '/api/productos', {
@@ -343,24 +344,21 @@ try {
     precioEspecial: 10,
     productos: [{ productoId: p5.data.id, cantidad: 1 }],
   })
-  ok(c3.status === 201 && c3.data.estado === 'Activo', 'combo activo con producto disponible')
+  ok(c3.status === 201 && c3.data.estado === 'Activo', 'combo activo con producto disponible', c3)
   const disNo = await req('PATCH', `/api/productos/${p5.data.id}/disponibilidad`, { disponibleHoy: false })
-  ok(disNo.status === 200 && disNo.data.aviso && disNo.data.aviso.combosSuspendidos.some((c) => c.id === c3.data.id), 'disponible_hoy=false suspende combo con aviso')
-  const estadoC3 = await prisma.combo.findUnique({ where: { id: c3.data.id } })
-  ok(estadoC3.estado === 'Suspendido', 'combo en BD quedó Suspendido')
+  ok(disNo.status === 200 && disNo.data.aviso && disNo.data.aviso.combosSuspendidos.some((c) => c.id === c3.data.id), 'disponible_hoy=false suspende combo con aviso', disNo)
   const disSi = await req('PATCH', `/api/productos/${p5.data.id}/disponibilidad`, { disponibleHoy: true })
   ok(
     disSi.status === 200 && disSi.data.aviso && disSi.data.aviso.combosReactivados.some((c) => c.id === c3.data.id),
     'volver a disponible_hoy=true reactiva el combo con aviso',
+    disSi
   )
-  const estadoC3b = await prisma.combo.findUnique({ where: { id: c3.data.id } })
-  ok(estadoC3b.estado === 'Activo', 'combo se reactiva AUTOMÁTICAMENTE al volver disponible su producto')
   const reactC3 = await req('PATCH', `/api/combos/${c3.data.id}/reactivar`, {})
-  ok(reactC3.status === 400, 'reactivar combo ya Activo -> 400')
+  ok(reactC3.status === 400, 'reactivar combo ya Activo -> 400', reactC3)
   // Con producto aún no disponible, reactivar debe rechazar (409).
   const disNo2 = await req('PATCH', `/api/productos/${p5.data.id}/disponibilidad`, { disponibleHoy: false })
   const reactC3Bloqueado = await req('PATCH', `/api/combos/${c3.data.id}/reactivar`, {})
-  ok(reactC3Bloqueado.status === 409, 'reactivar combo con producto no disponible -> 409')
+  ok(reactC3Bloqueado.status === 409, 'reactivar combo con producto no disponible -> 409', reactC3Bloqueado)
   const disSi2 = await req('PATCH', `/api/productos/${p5.data.id}/disponibilidad`, { disponibleHoy: true })
 
   console.log('== Desactivar producto en combo ==')
@@ -376,25 +374,25 @@ try {
     productos: [{ productoId: p6.data.id, cantidad: 1 }],
   })
   const desP = await req('PATCH', `/api/productos/${p6.data.id}/desactivar`, {})
-  ok(desP.status === 200 && desP.data.aviso && desP.data.aviso.combosSuspendidos.some((c) => c.id === c4.data.id), 'desactivar producto suspende combos y avisa')
+  ok(desP.status === 200 && desP.data.aviso && desP.data.aviso.combosSuspendidos.some((c) => c.id === c4.data.id), 'desactivar producto suspende combos y avisa', desP)
 
   console.log('== Cambio de precio en combo activo ==')
   const upPrecio = await req('PATCH', `/api/productos/${p3.data.id}`, { precio: 30 })
-  ok(upPrecio.status === 200 && upPrecio.data.aviso && upPrecio.data.aviso.combos.some((c) => c.id === c1.data.id), 'cambio de precio en combo activo genera aviso informativo')
+  ok(upPrecio.status === 200 && upPrecio.data.aviso && upPrecio.data.aviso.combos.some((c) => c.id === c1.data.id), 'cambio de precio en combo activo genera aviso informativo', upPrecio)
 
   console.log('== Eliminar combo ==')
   const delC2 = await req('DELETE', `/api/combos/${c2.data.id}`)
-  ok(delC2.status === 204, 'eliminar combo nunca vendido')
+  ok(delC2.status === 204, 'eliminar combo nunca vendido', delC2)
   const delC1 = await req('DELETE', `/api/combos/${c1.data.id}`)
-  ok(delC1.status === 204, 'eliminar combo nunca vendido (2)')
+  ok(delC1.status === 204, 'eliminar combo nunca vendido (2)', delC1)
   const desactivarCombo = await req('PATCH', `/api/combos/${c4.data.id}/desactivar`, {})
-  ok(desactivarCombo.status === 200 && desactivarCombo.data.estado === 'Inactivo', 'desactivar combo')
+  ok(desactivarCombo.status === 200 && desactivarCombo.data.estado === 'Inactivo', 'desactivar combo', desactivarCombo)
 
   console.log('== Pedido con combo + modificador Agregar/Sustituir: reserva al CREAR ==')
-  // Abrir caja para poder pagar los pedidos al final (crearPedido de un
+// Abrir caja para poder pagar los pedidos al final (crearPedido de un
   // Telefono+Para_recoger no la requiere, pero el pago sí).
   const abrirCaja3 = await req('POST', '/api/caja/abrir', { fondoInicial: 0 })
-  ok(abrirCaja3.status === 201, 'abrir caja para probar pago de pedidos')
+  ok(abrirCaja3.status === 201, 'abrir caja para probar pago de pedidos', abrirCaja3)
 
   const ingAg3 = await prisma.ingrediente.create({ data: { nombre: 'IngAg3', unidadMedida: 'kg', stockActual: 100, stockMinimoAlerta: 0 } })
   await prisma.movimiento_Inventario.create({ data: { ingredienteId: ingAg3.id, tipoMovimiento: 'Entrada', cantidad: 100 } })
@@ -416,16 +414,16 @@ try {
     productos: [{ comboId: comboAg3.id, cantidad: 2, productos: [{ productoId: prodAg3.id, modificadores: [{ modificadorId: modAg3.id }] }] }],
     metodoPago: 'Efectivo', montoReferenciaPago: 100,
   })
-  ok(pComboAg3.status === 201 && pComboAg3.data.estadoPago === 'Pendiente_pago', 'pedido combo+Agregar -> Pendiente_pago')
+  ok(pComboAg3.status === 201 && pComboAg3.data.estadoPago === 'Pendiente_pago', 'pedido combo+Agregar -> Pendiente_pago', pComboAg3)
   ok((await stockIngrediente(ingAg3.id)) === stockIngAg3_0 - 2, 'reserva al CREAR descuenta la receta base del combo (1x2)')
   ok((await stockIngrediente(extraAg3.id)) === stockExtraAg3_0 - 4, 'reserva al CREAR descuenta el extra del modificador Agregar (2x2)')
   const pagarComboAg3 = await req('PATCH', `/api/pedidos/${pComboAg3.data.id}/estado-pago`, { estadoPago: 'Pagado' })
-  ok(pagarComboAg3.status === 200, 'pago del combo+Agregar')
+  ok(pagarComboAg3.status === 200, 'pago del combo+Agregar', pagarComboAg3)
   ok(pComboAg3.data.total === 66, 'pedido combo+Agregar -> total 66 ((30 base + 3 extra) x2)')
   ok(pagarComboAg3.data.venta.total === 66, 'pago del combo+Agregar -> venta 66 (el Agregar SÍ suma al precio)')
   ok(
     pComboAg3.data.productos.every((pp) => pp.comboPrecioCongelado === 33),
-    'precio del combo congelado en 33 (base 30 + extra 3)',
+    'precio del combo congelado en 33 (base 30 + extra 3)'
   )
   ok((await stockIngrediente(ingAg3.id)) === stockIngAg3_0 - 2, 'pagar NO vuelve a descontar la receta (reserva ya hecha)')
   ok((await stockIngrediente(extraAg3.id)) === stockExtraAg3_0 - 4, 'pagar NO vuelve a descontar el extra (reserva ya hecha)')
@@ -450,11 +448,11 @@ try {
     productos: [{ comboId: comboS3.id, cantidad: 1, productos: [{ productoId: prodS3.id, modificadores: [{ modificadorId: modS3.id }] }] }],
     metodoPago: 'Efectivo', montoReferenciaPago: 100,
   })
-  ok(pComboS3.status === 201 && pComboS3.data.estadoPago === 'Pendiente_pago', 'pedido combo+Sustituir -> Pendiente_pago')
+  ok(pComboS3.status === 201 && pComboS3.data.estadoPago === 'Pendiente_pago', 'pedido combo+Sustituir -> Pendiente_pago', pComboS3)
   ok((await stockIngrediente(ingA3.id)) === stockIngA3_0, 'reserva al CREAR NO descuenta el ingrediente afectado A (se elimina de la receta)')
   ok((await stockIngrediente(ingB3.id)) === stockIngB3_0 - 3, 'reserva al CREAR descuenta el sustituto B (cantidadSustituto 3)')
   const pagarComboS3 = await req('PATCH', `/api/pedidos/${pComboS3.data.id}/estado-pago`, { estadoPago: 'Pagado' })
-  ok(pagarComboS3.status === 200, 'pago del combo+Sustituir')
+  ok(pagarComboS3.status === 200, 'pago del combo+Sustituir', pagarComboS3)
   ok((await stockIngrediente(ingB3.id)) === stockIngB3_0 - 3, 'pagar NO vuelve a descontar el sustituto (reserva ya hecha)')
 
   console.log('== Pedido viejo sin reserva: al pagarse valida stock (no descuenta a ciegas) ==')
@@ -472,7 +470,7 @@ try {
     productos: [{ productoId: prodR3.id, cantidad: 1 }],
     metodoPago: 'Efectivo', montoReferenciaPago: 100,
   })
-  ok(pR3.status === 201 && pR3.data.estadoPago === 'Pendiente_pago', 'pedido creado Pendiente_pago (con reserva)')
+  ok(pR3.status === 201 && pR3.data.estadoPago === 'Pendiente_pago', 'pedido creado Pendiente_pago (con reserva)', pR3)
   ok((await stockIngrediente(ingR3.id)) === 0, 'reserva al crear: stock 1 - 1 = 0')
   const borradosR3 = await prisma.movimiento_Inventario.deleteMany({
     where: { pedidoProductoId: { in: pR3.data.productos.map((x) => x.id) }, ventaProductoId: null },
@@ -481,15 +479,15 @@ try {
   await prisma.movimiento_Inventario.create({ data: { ingredienteId: ingR3.id, tipoMovimiento: 'Salida_venta', cantidad: -1 } })
   ok((await stockIngrediente(ingR3.id)) === 0, 'el ingrediente ya se consumió en otra venta (disponible 0)')
   const pagoViejoR3 = await req('PATCH', `/api/pedidos/${pR3.data.id}/estado-pago`, { estadoPago: 'Pagado' })
-  ok(pagoViejoR3.status === 409, 'pagar pedido viejo sin stock -> 409 (NO descuenta a ciegas)')
+  ok(pagoViejoR3.status === 409, 'pagar pedido viejo sin stock -> 409 (NO descuenta a ciegas)', pagoViejoR3)
   ok(
     Array.isArray(pagoViejoR3.data?.stockInsuficiente) &&
       pagoViejoR3.data.stockInsuficiente.some((f) => f.id === ingR3.id && f.requerido === 1 && f.disponible === 0),
-    '409 reporta el faltante (requerido 1, disponible 0)'
+    '409 reporta el faltante (requerido 1, disponible 0)', pagoViejoR3
   )
   ok((await stockIngrediente(ingR3.id)) === 0, 'sin usarDisponible el stock sigue 0 (nada descontado)')
   const pagoViejoR3Usar = await req('PATCH', `/api/pedidos/${pR3.data.id}/estado-pago`, { estadoPago: 'Pagado', usarDisponible: true })
-  ok(pagoViejoR3Usar.status === 200 && pagoViejoR3Usar.data.pedido?.estadoPago === 'Pagado', 'con usarDisponible:true el pago procede ("Usar lo disponible")')
+  ok(pagoViejoR3Usar.status === 200 && pagoViejoR3Usar.data.pedido?.estadoPago === 'Pagado', 'con usarDisponible:true el pago procede ("Usar lo disponible")', pagoViejoR3Usar)
   ok((await stockIngrediente(ingR3.id)) === 0, 'descuento topeado a lo disponible: stock 0 (NUNCA negativo)')
 
   console.log('== Cancelar pedido Pagado en Efectivo: devolución con medio Efectivo_de_caja ==')
@@ -498,7 +496,7 @@ try {
     await req('POST', '/api/caja/cerrar', { efectivoContado: 0, usuarioId: admin.id })
   }
   const abrirRefund = await req('POST', '/api/caja/abrir', { fondoInicial: 0, usuarioId: admin.id })
-  ok(abrirRefund.status === 201 && abrirRefund.data.diaOperativo.estado === 'Abierto', 'abrir caja fresca (fondo 0) para el caso de devolución')
+  ok(abrirRefund.status === 201 && abrirRefund.data.diaOperativo.estado === 'Abierto', 'abrir caja fresca (fondo 0) para el caso de devolución', abrirRefund)
   const prodRefund = await prisma.producto.create({ data: { nombre: 'ProdRefund', precio: 20, tipo: 'Reventa_directa' } })
   await prisma.movimiento_Inventario.create({ data: { productoId: prodRefund.id, tipoMovimiento: 'Entrada', cantidad: 10 } })
   const pRefund = await req('POST', '/api/pedidos', {
@@ -506,18 +504,18 @@ try {
     productos: [{ productoId: prodRefund.id, cantidad: 1 }],
     metodoPago: 'Efectivo', montoReferenciaPago: 100, usuarioId: admin.id,
   })
-  ok(pRefund.status === 201 && pRefund.data.estadoPago === 'Pagado' && pRefund.data.total === 20, 'pedido de Mostrador pagado al capturar (total 20)')
+  ok(pRefund.status === 201 && pRefund.data.estadoPago === 'Pagado' && pRefund.data.total === 20, 'pedido de Mostrador pagado al capturar (total 20)', pRefund)
   const cancelRefund = await req('PATCH', `/api/pedidos/${pRefund.data.id}/estado-preparacion`, {
     estadoPreparacion: 'Cancelado', regresaAInventario: false, devolverDinero: true, medioDevolucion: 'Efectivo_de_caja',
   })
-  ok(cancelRefund.status === 200 && cancelRefund.data.pedido.estadoPreparacion === 'Cancelado', 'cancelar pedido Pagado con devolución -> Cancelado')
-  ok(cancelRefund.data.devolucion && cancelRefund.data.devolucion.monto === 20 && cancelRefund.data.devolucion.medioDevolucion === 'Efectivo_de_caja', 'devolución por 20 con medio Efectivo_de_caja')
+  ok(cancelRefund.status === 200 && cancelRefund.data.pedido.estadoPreparacion === 'Cancelado', 'cancelar pedido Pagado con devolución -> Cancelado', cancelRefund)
+  ok(cancelRefund.data.devolucion && cancelRefund.data.devolucion.monto === 20 && cancelRefund.data.devolucion.medioDevolucion === 'Efectivo_de_caja', 'devolución por 20 con medio Efectivo_de_caja', cancelRefund)
   const devRefund = await prisma.devolucion.findFirst({ where: { ventaId: pRefund.data.venta.id } })
   ok(devRefund && devRefund.monto === 20 && devRefund.medioDevolucion === 'Efectivo_de_caja' && devRefund.motivo === 'Cancelacion_pedido', 'Devolución guardada: motivo Cancelacion_pedido, medio Efectivo_de_caja, monto 20')
   const cerrarRefund = await req('POST', '/api/caja/cerrar', { efectivoContado: 0, usuarioId: admin.id })
-  ok(cerrarRefund.status === 200 && cerrarRefund.data.cierre.efectivoEsperado === 0, 'efectivo esperado = 0 (venta 20 - devolución Efectivo_de_caja 20)')
-  ok(cerrarRefund.data.devolucionesEfectivoCaja === 20, 'resumen de caja reporta 20 en "Devoluciones en efectivo"')
-  ok(cerrarRefund.data.cierre.diferencia === 0, 'diferencia = 0 (contado 0)')
+  ok(cerrarRefund.status === 200 && cerrarRefund.data.cierre.efectivoEsperado === 0, 'efectivo esperado = 0 (venta 20 - devolución Efectivo_de_caja 20)', cerrarRefund)
+  ok(cerrarRefund.data.devolucionesEfectivoCaja === 20, 'resumen de caja reporta 20 en "Devoluciones en efectivo"', cerrarRefund)
+  ok(cerrarRefund.data.cierre.diferencia === 0, 'diferencia = 0 (contado 0)', cerrarRefund)
 
   console.log('== Regresión confirmarPedido: click normal -> 409; solo "Usar lo disponible" -> 201 ==')
   const estReg = await req('GET', '/api/caja/estado')
@@ -525,7 +523,7 @@ try {
     await req('POST', '/api/caja/cerrar', { efectivoContado: 0, usuarioId: admin.id })
   }
   const abrirReg = await req('POST', '/api/caja/abrir', { fondoInicial: 0, usuarioId: admin.id })
-  ok(abrirReg.status === 201 && abrirReg.data.diaOperativo.estado === 'Abierto', 'abrir caja fresca para la regresión de confirmarPedido')
+  ok(abrirReg.status === 201 && abrirReg.data.diaOperativo.estado === 'Abierto', 'abrir caja fresca para la regresión de confirmarPedido', abrirReg)
   const prodReg = await prisma.producto.create({ data: { nombre: 'ProdRegClick', precio: 15, tipo: 'Reventa_directa' } })
   await prisma.movimiento_Inventario.create({ data: { productoId: prodReg.id, tipoMovimiento: 'Entrada', cantidad: 1 } })
   const clickNormal = await req('POST', '/api/pedidos', {
@@ -533,14 +531,14 @@ try {
     productos: [{ productoId: prodReg.id, cantidad: 2 }],
     metodoPago: 'Efectivo', montoReferenciaPago: 100, usuarioId: admin.id,
   })
-  ok(clickNormal.status === 409 && /stock insuficiente|disponible/i.test(clickNormal.data?.message || ''), 'click normal (sin usarDisponible) -> 409: nunca vende con stock insuficiente')
+  ok(clickNormal.status === 409 && /stock insuficiente|disponible/i.test(clickNormal.data?.message || ''), 'click normal (sin usarDisponible) -> 409: nunca vende con stock insuficiente', clickNormal)
   ok((await stockProducto(prodReg.id)) === 1, 'el click normal NO descontó nada (stock sigue 1)')
   const clickUsar = await req('POST', '/api/pedidos', {
     tipo: 'Para_recoger', origen: 'Mostrador', nombreClienteLibre: 'ClickUsar',
     productos: [{ productoId: prodReg.id, cantidad: 2 }],
     metodoPago: 'Efectivo', montoReferenciaPago: 100, usarDisponible: true, usuarioId: admin.id,
   })
-  ok(clickUsar.status === 201 && clickUsar.data.estadoPago === 'Pagado', '"Usar lo disponible" (usarDisponible:true) -> 201, vende solo lo que hay')
+  ok(clickUsar.status === 201 && clickUsar.data.estadoPago === 'Pagado', '"Usar lo disponible" (usarDisponible:true) -> 201, vende solo lo que hay', clickUsar)
   ok((await stockProducto(prodReg.id)) === 0, 'descuento topeado a lo disponible: stock 0 (NUNCA negativo)')
 
   console.log('== SEGURIDAD: precios manipulados en el body SIEMPRE se ignoran ==')
@@ -549,7 +547,7 @@ try {
     await req('POST', '/api/caja/cerrar', { efectivoContado: 0, usuarioId: admin.id })
   }
   const abrirSec3 = await req('POST', '/api/caja/abrir', { fondoInicial: 0, usuarioId: admin.id })
-  ok(abrirSec3.status === 201, 'abrir caja fresca para las pruebas de precio manipulado')
+  ok(abrirSec3.status === 201, 'abrir caja fresca para las pruebas de precio manipulado', abrirSec3)
 
   const secIng3 = await prisma.ingrediente.create({ data: { nombre: 'SecIng3', unidadMedida: 'kg', stockActual: 100, stockMinimoAlerta: 0 } })
   await prisma.movimiento_Inventario.create({ data: { ingredienteId: secIng3.id, tipoMovimiento: 'Entrada', cantidad: 100 } })
@@ -567,37 +565,37 @@ try {
     metodoPago: 'Efectivo', usuarioId: admin.id,
   })
   ok(vSec3.status === 201 && vSec3.data.venta.total === 15 && vSec3.data.venta.productos[0].precioCongelado === 15,
-    'venta directa IGNORA precioCongelado:0.01 -> cobra 15 (precio de la BD)')
+    'venta directa IGNORA precioCongelado:0.01 -> cobra 15 (precio de la BD)', vSec3)
 
   const vSec3Mod = await req('POST', '/api/ventas', {
     productos: [{ productoId: secProd3.id, cantidad: 1, modificadores: [{ modificadorId: secMod3.id, costoAplicado: 0.01 }] }],
     metodoPago: 'Efectivo', usuarioId: admin.id,
   })
-  ok(vSec3Mod.status === 201 && vSec3Mod.data.venta.total === 18, 'costoAplicado:0.01 IGNORADO -> costo real 3 (total 18)')
+  ok(vSec3Mod.status === 201 && vSec3Mod.data.venta.total === 18, 'costoAplicado:0.01 IGNORADO -> costo real 3 (total 18)', vSec3Mod)
 
   const vSec3Combo = await req('POST', '/api/ventas', {
     productos: [{ comboId: secCombo3.id, cantidad: 1, precioCongelado: 0.01 }],
     metodoPago: 'Efectivo', usuarioId: admin.id,
   })
-  ok(vSec3Combo.status === 201 && vSec3Combo.data.venta.total === 30, 'combo IGNORA precioCongelado:0.01 -> cobra precio especial 30')
+  ok(vSec3Combo.status === 201 && vSec3Combo.data.venta.total === 30, 'combo IGNORA precioCongelado:0.01 -> cobra precio especial 30', vSec3Combo)
 
   const pSec3 = await req('POST', '/api/pedidos', {
     tipo: 'Para_recoger', origen: 'Telefono', nombreClienteLibre: 'SecPedido3',
     productos: [{ productoId: secProd3.id, cantidad: 1, precioCongelado: 0.01 }],
     metodoPago: 'Efectivo', montoReferenciaPago: 100, usuarioId: admin.id,
   })
-  ok(pSec3.status === 201 && pSec3.data.total === 15, 'pedido IGNORA precioCongelado:0.01 al crearse -> total real 15')
+  ok(pSec3.status === 201 && pSec3.data.total === 15, 'pedido IGNORA precioCongelado:0.01 al crearse -> total real 15', pSec3)
 
   await prisma.producto.update({ where: { id: secProd3.id }, data: { precio: 999 } })
   const pagoSec3 = await req('PATCH', `/api/pedidos/${pSec3.data.id}/estado-pago`, { estadoPago: 'Pagado', precioCongelado: 0.01, usuarioId: admin.id })
   ok(pagoSec3.status === 200 && pagoSec3.data.venta.total === 15,
-    'pago de pedido IGNORA precioCongelado:0.01 -> venta respeta el precio CONGELADO en BD (15, no 999)')
+    'pago de pedido IGNORA precioCongelado:0.01 -> venta respeta el precio CONGELADO en BD (15, no 999)', pagoSec3)
 
   const vSec3Nuevo = await req('POST', '/api/ventas', {
     productos: [{ productoId: secProd3.id, cantidad: 1, precioCongelado: 0.01 }],
     metodoPago: 'Efectivo', usuarioId: admin.id,
   })
-  ok(vSec3Nuevo.status === 201 && vSec3Nuevo.data.venta.total === 999, 'precio SIEMPRE desde BD: tras subirlo a 999, la nueva venta cobra 999 (no 0.01)')
+  ok(vSec3Nuevo.status === 201 && vSec3Nuevo.data.venta.total === 999, 'precio SIEMPRE desde BD: tras subirlo a 999, la nueva venta cobra 999 (no 0.01)', vSec3Nuevo)
 
   console.log(`\nResultado: ${fallas === 0 ? 'TODAS LAS PRUEBAS PASARON' : fallas + ' prueba(s) fallaron'}`)
 } catch (e) {

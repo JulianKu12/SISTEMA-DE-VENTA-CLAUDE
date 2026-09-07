@@ -1,16 +1,17 @@
 import { PrismaClient } from '@prisma/client'
 import bcrypt from 'bcrypt'
 
-const prisma = new PrismaClient()
+const prisma = new PrismaClient({ datasources: { db: { url: 'file:./sec_test.db' } } })
 const BASE = 'http://localhost:3001'
 let fallas = 0
 let token = null
 
-function ok(cond, nombre) {
+function ok(cond, nombre, res = null) {
   if (cond) console.log(`  OK  ${nombre}`)
   else {
     fallas++
-    console.log(`FALLA ${nombre}`)
+    const extra = res ? ` | status: ${res.status} | body: ${JSON.stringify(res.data)}` : ''
+    console.log(`FALLA ${nombre}${extra}`)
   }
 }
 
@@ -38,7 +39,11 @@ async function stockIngrediente(id) {
   return agg._sum.cantidad ?? 0
 }
 
-const admin = await prisma.usuario.create({ data: { tipo: 'Administrador', usuario: 'admin_test6', contraseña: await bcrypt.hash('x', 10) } })
+const admin = await prisma.usuario.upsert({
+  where: { usuario: 'admin_test6' },
+  update: {},
+  create: { tipo: 'Administrador', usuario: 'admin_test6', contraseña: await bcrypt.hash('x', 10) },
+})
 
 async function loginAdmin() {
   const res = await fetch(BASE + '/api/auth/login', {
@@ -48,7 +53,7 @@ async function loginAdmin() {
   })
   const data = await res.json()
   token = data.token
-  return res.status
+  return { status: res.status, data: res }
 }
 
 const harina = await prisma.ingrediente.create({
@@ -62,7 +67,8 @@ await prisma.movimiento_Inventario.create({ data: { productoId: coca.id, tipoMov
 
 try {
   console.log('== Autenticación ==')
-  ok((await loginAdmin()) === 200, 'login admin')
+  const loginRes = await loginAdmin()
+  ok(loginRes.status === 200, 'login admin', loginRes)
 
   console.log('== Configuracion global ==')
   const cfg = await req('GET', '/api/config')
@@ -250,6 +256,26 @@ try {
   const entregado = await req('PATCH', `/api/pedidos/${p4.data.id}/estado-preparacion`, { estadoPreparacion: 'Entregado' })
   ok(entregado.status === 200 && entregado.data.pedido.estadoPreparacion === 'Entregado', 'P4 Entregado')
 
+  console.log('== Cancelar Enviado con repartidor requiere aviso ==')
+  const empAviso = await req('POST', '/api/empleados', { nombre: 'PedroAviso', usuario: 'pedroaviso', contraseña: 'pass123' })
+  ok(empAviso.status === 201, 'repartidor para prueba aviso creado')
+  const pAviso = await req('POST', '/api/pedidos', {
+    tipo: 'A_domicilio', origen: 'Telefono', nombreClienteLibre: 'AvisoCancel',
+    productos: [{ productoId: coca.id, cantidad: 1 }],
+    metodoPago: 'Efectivo', montoReferenciaPago: 100, usuarioId: admin.id,
+    referenciaLibre: 'Calle falsa 123',
+  })
+  ok(pAviso.status === 201, 'pedido A_domicilio creado')
+  const prepAviso = await req('PATCH', `/api/pedidos/${pAviso.data.id}/estado-preparacion`, { estadoPreparacion: 'En_preparacion' })
+  ok(prepAviso.status === 200, 'pasa a En_preparacion')
+  const enviadoAviso = await req('PATCH', `/api/pedidos/${pAviso.data.id}/estado-preparacion`, { estadoPreparacion: 'Enviado', repartidorId: empAviso.data.id })
+  ok(enviadoAviso.status === 200 && enviadoAviso.data.pedido.estadoPreparacion === 'Enviado' && enviadoAviso.data.pedido.repartidorId === empAviso.data.id, 'pasa a Enviado con repartidor asignado')
+  const cancelSinAviso = await req('PATCH', `/api/pedidos/${pAviso.data.id}/estado-preparacion`, { estadoPreparacion: 'Cancelado', regresaAInventario: false })
+  ok(cancelSinAviso.status === 400 && /aviso.*repartidor/i.test(cancelSinAviso.data?.message || ''), 'cancelar Enviado con repartidor SIN aviso -> 400 con error claro')
+  const cancelConAviso = await req('PATCH', `/api/pedidos/${pAviso.data.id}/estado-preparacion`, { estadoPreparacion: 'Cancelado', regresaAInventario: false, avisoConfirmado: true })
+  ok(cancelConAviso.status === 200 && cancelConAviso.data.pedido.estadoPreparacion === 'Cancelado', 'cancelar Enviado con repartidor CON avisoConfirmado:true -> 200 Cancelado')
+  ok(cancelConAviso.data.pedido.repartidorId === empAviso.data.id, 'repartidorId se mantiene en el pedido cancelado')
+
   console.log('== Cancelacion con regreso a inventario (P1, ya pagado) ==')
   const antes = await stockProducto(coca.id)
   const cancelar1 = await req('PATCH', `/api/pedidos/${p1.data.id}/estado-preparacion`, {
@@ -264,7 +290,7 @@ try {
 
   console.log('== Listados ==')
   const lista = await req('GET', '/api/pedidos')
-  ok(lista.status === 200 && lista.data.length === 4, 'listar 4 pedidos')
+  ok(lista.status === 200 && lista.data.length === 5, 'listar 5 pedidos (4 originales + aviso)')
   const filtro = await req('GET', '/api/pedidos?estadoPreparacion=Pendiente')
   ok(filtro.status === 200 && filtro.data.every((p) => p.estadoPreparacion === 'Pendiente'), 'filtro por estado_preparacion')
   const porRepartidor = await req('GET', `/api/pedidos/repartidor/${emp.data.id}`)
@@ -302,7 +328,8 @@ try {
   ok(pCombo.data.total === 35, 'pedido combo total 35 (precio del combo, no suma de productos)')
   ok(pCombo.data.venta && pCombo.data.venta.total === 35, 'venta generada del combo total 35')
   ok(pCombo.data.productos.length === 2, 'pedido combo expandido en 2 filas (una por producto)')
-  ok((await stockProducto(coca.id)) === 5, 'combo reserva reventa al CREAR (coca 6->5)')
+  const stockCocaCombo = await stockProducto(coca.id)
+  ok(stockCocaCombo === 5, 'combo reserva reventa al CREAR (coca 6->5) | actual=' + stockCocaCombo)
   const stockHarina6 = await prisma.movimiento_Inventario.aggregate({ _sum: { cantidad: true }, where: { ingredienteId: harina.id } })
   ok(stockHarina6._sum.cantidad === 6, 'combo reserva la receta al CREAR (harina 8->6)')
 
@@ -626,6 +653,47 @@ try {
   ok(cerrarRef.status === 200 && cerrarRef.data.cierre.efectivoEsperado === 125, 'efectivo esperado = 125 (fondo 100 + ventas 50 - devolución 25)')
   ok(cerrarRef.data.cierre.diferencia === 0, 'diferencia = 0 (contado 125)')
   ok(cerrarRef.data.devolucionesEfectivoCaja === 25, 'resumen de caja reporta 25 de devoluciones en efectivo de caja')
+
+  console.log('== Pedido A_domicilio cancelado sin regreso + Ingreso Manual: inventario NO duplica, efectivo SÍ suma ==')
+  const estIng = await req('GET', '/api/caja/estado')
+  if (estIng.data?.abierta) {
+    await req('POST', '/api/caja/cerrar', { efectivoContado: 0, usuarioId: admin.id })
+  }
+  const abrirIngreso = await req('POST', '/api/caja/abrir', { fondoInicial: 0, usuarioId: admin.id })
+  ok(abrirIngreso.status === 201, 'abrir caja para prueba ingreso manual')
+  const prodIng = await prisma.producto.create({ data: { nombre: 'ProdIngManual', precio: 15, tipo: 'Reventa_directa' } })
+  await prisma.movimiento_Inventario.create({ data: { productoId: prodIng.id, tipoMovimiento: 'Entrada', cantidad: 10 } })
+  const pIng = await req('POST', '/api/pedidos', {
+    tipo: 'A_domicilio', origen: 'Telefono', nombreClienteLibre: 'IngManual',
+    productos: [{ productoId: prodIng.id, cantidad: 2 }],
+    metodoPago: 'Efectivo', montoReferenciaPago: 100, usuarioId: admin.id,
+    referenciaLibre: 'Calle falsa 123',
+  })
+  ok(pIng.status === 201, 'pedido A_domicilio creado')
+  const pagoIng = await req('PATCH', `/api/pedidos/${pIng.data.id}/estado-pago`, { estadoPago: 'Pagado', usuarioId: admin.id })
+  ok(pagoIng.status === 200, 'pagado -> venta generada')
+  const ventaIngId = pagoIng.data.venta.id
+  const stockAntes = await stockProducto(prodIng.id)
+  const cancelIng = await req('PATCH', `/api/pedidos/${pIng.data.id}/estado-preparacion`, {
+    estadoPreparacion: 'Cancelado',
+    regresaAInventario: false,
+    devolverDinero: true,
+    medioDevolucion: 'Efectivo_de_caja',
+  })
+  ok(cancelIng.status === 200 && cancelIng.data.pedido.estadoPreparacion === 'Cancelado', 'cancelado sin regreso a inventario, con devolución Efectivo_de_caja')
+  ok(cancelIng.data.devolucion && cancelIng.data.devolucion.monto === pIng.data.total, 'devolución por el total del pedido')
+  const stockDespuesCancel = await stockProducto(prodIng.id)
+  ok(stockDespuesCancel === stockAntes, 'inventario NO cambió al cancelar sin regreso (no duplica)')
+  const ingreso = await req('POST', '/api/ingresos-manuales', {
+    monto: pIng.data.total, metodoPago: 'Efectivo', motivo: 'Compensación cancelación', usuarioId: admin.id,
+  })
+  ok(ingreso.status === 201 && ingreso.data?.ingreso?.monto === pIng.data.total, 'Ingreso Manual creado por el mismo monto')
+  const cerrarIng = await req('POST', '/api/caja/cerrar', { efectivoContado: pIng.data.total, usuarioId: admin.id })
+  ok(cerrarIng.status === 200, 'cierre de caja OK')
+  ok(cerrarIng.data.cierre.efectivoEsperado === pIng.data.total, 'efectivo esperado INCLUYE el ingreso manual (0 + ingreso - devolución = 0, pero ingreso suma al esperado)')
+  ok(cerrarIng.data.ingresosEfectivo === pIng.data.total, 'resumen de caja reporta el ingreso en ingresosEfectivo')
+  ok(cerrarIng.data.devolucionesEfectivoCaja === pIng.data.total, 'resumen de caja reporta la devolución en devolucionesEfectivoCaja')
+  ok(cerrarIng.data.cierre.diferencia === 0, 'diferencia = 0')
 
   console.log('== Regresión confirmarPedido: click normal -> 409; solo "Usar lo disponible" -> 201 ==')
   const estReg = await req('GET', '/api/caja/estado')

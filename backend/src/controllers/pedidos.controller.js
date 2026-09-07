@@ -24,7 +24,7 @@ import { obtenerConfiguracion } from './config.controller.js'
 const includePedido = {
   cliente: { select: { id: true, nombre: true, telefono: true } },
   referencia: true,
-  repartidor: { select: { id: true, nombre: true, estadoDisponibilidad: true } },
+  repartidor: { select: { id: true, nombre: true, telefono: true, estadoDisponibilidad: true } },
   venta: { select: { id: true, total: true, metodoPago: true, noCobrar: true } },
   productos: {
     include: {
@@ -328,20 +328,18 @@ export const crearPedido = asyncHandler(async (req, res) => {
           filas.push({ productoId: dp.productoId, pedidoProductoId: pp.id })
         }
         itemsVenta.push({
+          tipo: 'combo',
           comboId: it.comboId,
           cantidad: it.cantidad,
-          precioCongelado: it.comboPrecioCongelado,
-          pedidoProductos: filas,
-          // Config por producto incluido (nota + modificadores), igual que los
-          // productos simples (línea 369): la reserva inicial ya debe calcular
-          // el inventario CON modificadores, no solo al pagar (itemsDesdePp).
-          productos: it.detalleProductos.map((dp) => ({
-            productoId: dp.productoId,
-            nota: dp.nota || undefined,
-            modificadores: (dp.modificadores || []).map((m) => ({
-              modificadorId: m.modificadorId,
-              costoAplicado: m.costoAplicado,
-            })),
+          comboPrecioCongelado: it.comboPrecioCongelado,
+          detalleProductos: filas.map((f, idx) => ({
+            productoId: f.productoId,
+            cantidad: it.detalleProductos[idx]?.cantidad ?? 1,
+            precioCongelado: it.detalleProductos[idx]?.precioCongelado ?? 0,
+            consumos: it.detalleProductos[idx]?.consumos ?? [],
+            modificadores: it.detalleProductos[idx]?.modificadores || [],
+            nota: it.detalleProductos[idx]?.nota || null,
+            pedidoProductoId: f.pedidoProductoId,
           })),
         })
       } else {
@@ -371,15 +369,20 @@ export const crearPedido = asyncHandler(async (req, res) => {
           })
         }
         itemsVenta.push({
-          productoId: d.productoId,
-          cantidad: d.cantidad,
-          esMitadYMitad: d.esMitadYMitad,
-          precioCongelado: d.precioCongelado,
-          pedidoProductoId: pp.id,
-          ...(d.esMitadYMitad
-            ? { sabor1ProductoId: d.sabor1ProductoId, sabor2ProductoId: d.sabor2ProductoId }
-            : {}),
-          modificadores: d.modificadores,
+          tipo: 'producto',
+          detalle: {
+            productoId: d.productoId,
+            cantidad: d.cantidad,
+            precioCongelado: d.precioCongelado,
+            esMitadYMitad: d.esMitadYMitad,
+            nota: d.nota || null,
+            ...(d.esMitadYMitad
+              ? { sabor1ProductoId: d.sabor1ProductoId, sabor2ProductoId: d.sabor2ProductoId }
+              : {}),
+            modificadores: d.modificadores,
+            pedidoProductoId: pp.id,
+          },
+          consumos: it.consumos,
         })
       }
     }
@@ -623,6 +626,20 @@ export const cambiarEstadoPreparacion = asyncHandler(async (req, res) => {
   const resultado = await prisma.$transaction(async (tx) => {
     const pedido = await tx.pedido.findUnique({ where: { id: Number(id) } })
     if (!pedido) throw new HttpError(404, 'Pedido no encontrado')
+
+    const { avisoConfirmado } = req.body
+    if (avisoConfirmado !== undefined && typeof avisoConfirmado !== 'boolean') {
+      throw new HttpError(400, 'avisoConfirmado debe ser un booleano')
+    }
+
+    if (
+      pedido.estadoPreparacion === 'Enviado' &&
+      pedido.repartidorId != null &&
+      estadoPreparacion === 'Cancelado' &&
+      !avisoConfirmado
+    ) {
+      throw new HttpError(400, 'Un pedido Enviado con repartidor asignado requiere confirmar aviso al repartidor antes de cancelarse (avisoConfirmado: true)')
+    }
 
     const permitidas = estadosTransicionables(pedido.estadoPreparacion, pedido.tipo)
     if (!permitidas.includes(estadoPreparacion)) {

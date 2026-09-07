@@ -8,6 +8,7 @@ import ventaRoutes from './ventas.routes.js'
 import inventarioRoutes from './inventario.routes.js'
 import cajaRoutes from './caja.routes.js'
 import gastosRoutes from './gastos.routes.js'
+import ingresosManualesRoutes from './ingresosManuales.routes.js'
 import devolucionesRoutes from './devoluciones.routes.js'
 import clientesRoutes from './clientes.routes.js'
 import empleadosRoutes from './empleados.routes.js'
@@ -25,6 +26,7 @@ router.use('/ventas', ventaRoutes)
 router.use('/inventario', inventarioRoutes)
 router.use('/caja', cajaRoutes)
 router.use('/gastos', gastosRoutes)
+router.use('/ingresos-manuales', ingresosManualesRoutes)
 router.use('/devoluciones', devolucionesRoutes)
 router.use('/clientes', clientesRoutes)
 router.use('/empleados', empleadosRoutes)

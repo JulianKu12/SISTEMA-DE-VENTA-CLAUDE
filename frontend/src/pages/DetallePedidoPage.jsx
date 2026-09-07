@@ -1047,6 +1047,92 @@ function ModalMedioDevolucion({ monto, noCobrar, onConfirmar, onCancelar }) {
   )
 }
 
+function ModalAvisoRepartidor({ repartidor, onConfirmar, onCancelar }) {
+  const [confirmado, setConfirmado] = useState(false)
+
+  useEffect(() => {
+    const overflowAnterior = document.body.style.overflow
+    document.body.style.overflow = 'hidden'
+    const cerrarConEsc = (e) => {
+      if (e.key === 'Escape') onCancelar()
+    }
+    window.addEventListener('keydown', cerrarConEsc)
+    return () => {
+      document.body.style.overflow = overflowAnterior
+      window.removeEventListener('keydown', cerrarConEsc)
+    }
+  }, [onCancelar])
+
+  const telefono = repartidor?.telefono ? ` - ${repartidor.telefono}` : ' (sin teléfono registrado)'
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4" role="dialog" aria-modal="true" aria-labelledby="aviso-repartidor-titulo">
+      <div
+        className="absolute inset-0 animate-[fade-in_200ms_ease-out] bg-ink/60 backdrop-blur-sm"
+        onClick={onCancelar}
+      />
+      <div className="relative w-full max-w-md animate-[sheet-up_280ms_ease-out] rounded-3xl bg-card p-6 shadow-card">
+        <div className="flex items-start gap-3">
+          <div className="mt-0.5 shrink-0 flex h-10 w-10 items-center justify-center rounded-full bg-amber-500/15">
+            <svg
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="2"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              className="h-5 w-5 text-amber-600"
+              aria-hidden="true"
+            >
+              <path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z" />
+              <path d="M12 9v4m0 4h.01" />
+            </svg>
+          </div>
+          <div className="min-w-0 flex-1">
+            <h2 id="aviso-repartidor-titulo" className="text-lg font-bold text-ink">Repartidor en camino</h2>
+            <p className="mt-2 text-sm leading-relaxed text-muted">
+              Este pedido ya fue enviado con <span className="font-semibold text-ink">{repartidor?.nombre || 'repartidor desconocido'}</span>{telefono}.
+            </p>
+            <p className="mt-3 text-sm leading-relaxed text-danger font-medium">
+              El repartidor probablemente no tenga forma de enterarse de esta cancelación hasta que regrese al negocio.
+              <strong> LLÁMALO O CONTÁCTALO AHORA </strong> para avisarle antes de continuar.
+            </p>
+          </div>
+        </div>
+
+        <div className="mt-6 rounded-2xl bg-amber-50/50 border border-amber-200/50 p-4">
+          <label className="flex cursor-pointer items-start gap-3">
+            <input
+              type="checkbox"
+              checked={confirmado}
+              onChange={(e) => setConfirmado(e.target.checked)}
+              className="mt-1 h-4 w-4 shrink-0 accent-[#007aff] border-muted/30 rounded transition focus:ring-2 focus:ring-accent/40"
+              required
+            />
+            <span className="text-sm leading-relaxed text-ink">
+              <strong>Ya avisé al repartidor</strong> (o no pude contactarlo, continuar de todas formas)
+            </span>
+          </label>
+        </div>
+
+        <div className="mt-6 flex gap-3">
+          <Button variant="secondary" size="md" className="flex-1" onClick={onCancelar}>
+            Volver sin cancelar
+          </Button>
+          <Button
+            size="md"
+            className="flex-1 bg-danger text-white active:bg-danger/85"
+            disabled={!confirmado}
+            onClick={onConfirmar}
+          >
+            Confirmar y continuar con la cancelación
+          </Button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 function DetallePedidoPage() {
   const { id } = useParams()
   const navigate = useNavigate()
@@ -1065,6 +1151,7 @@ function DetallePedidoPage() {
   const [errorCatalogo, setErrorCatalogo] = useState('')
   const catalogoEnCurso = useRef(false)
   const [confirmarCancelarAbierto, setConfirmarCancelarAbierto] = useState(false)
+  const [avisoRepartidorAbierto, setAvisoRepartidorAbierto] = useState(false)
   const [regresoPendiente, setRegresoPendiente] = useState(null)
   const [devolverDineroPendiente, setDevolverDineroPendiente] = useState(null)
   const [modalMedioDevolucion, setModalMedioDevolucion] = useState(null)
@@ -1193,12 +1280,22 @@ function DetallePedidoPage() {
 
   const iniciarCancelar = () => {
     if (ocupado) return
-    setConfirmarCancelarAbierto(true)
+    // Si es A_domicilio, está Enviado y tiene repartidor asignado, mostrar aviso obligatorio
+    if (esDomicilio && enEnviado && pedido?.repartidor) {
+      setAvisoRepartidorAbierto(true)
+    } else {
+      setConfirmarCancelarAbierto(true)
+    }
   }
 
   const confirmarCancelacion = () => {
     setConfirmarCancelarAbierto(false)
     setRegresoPendiente({ tipo: 'cancelar' })
+  }
+
+  const confirmarAvisoRepartidor = () => {
+    setAvisoRepartidorAbierto(false)
+    setConfirmarCancelarAbierto(true)
   }
 
   // Resuelve la pregunta de inventario tras confirmar una cancelación o un
@@ -1920,6 +2017,14 @@ function DetallePedidoPage() {
           if (pendiente) ejecutarCancelacion(pendiente.regresa, false)
         }}
       />
+
+      {avisoRepartidorAbierto && (
+        <ModalAvisoRepartidor
+          repartidor={pedido?.repartidor}
+          onConfirmar={confirmarAvisoRepartidor}
+          onCancelar={() => setAvisoRepartidorAbierto(false)}
+        />
+      )}
 
       {modalMedioDevolucion && (
         <ModalMedioDevolucion

@@ -6,37 +6,76 @@
 //   cd backend
 //   npm run db:seed        (o: npx prisma db seed)
 //
-// Credenciales de ejemplo (CAMBIARLAS DESPUÉS):
-//   usuario:    admin
-//   contraseña: admin123
+// Se pedirá usuario y contraseña por consola (mínimo 8 caracteres).
+import readline from 'readline'
 import bcrypt from 'bcrypt'
 import { PrismaClient } from '@prisma/client'
 
 const prisma = new PrismaClient()
 
-async function main() {
-  const existente = await prisma.usuario.findFirst({ where: { tipo: 'Administrador' } })
-  if (existente) {
-    console.log(`Ya existe un usuario Administrador ("${existente.usuario}"). No se crea otro.`)
-    return
-  }
+async function checkExistingAdmin() {
+  return prisma.usuario.findFirst({ where: { tipo: 'Administrador' } })
+}
 
-  const hash = await bcrypt.hash('admin123', 10)
-  const admin = await prisma.usuario.create({
+async function createAdmin(usuario, contraseña) {
+  const hash = await bcrypt.hash(contraseña, 10)
+  return prisma.usuario.create({
     data: {
       tipo: 'Administrador',
       nombre: 'Administrador',
-      usuario: 'admin',
+      usuario: usuario.trim(),
       contraseña: hash,
     },
   })
-  console.log(`Usuario Administrador creado: usuario="admin", contraseña="admin123" (id=${admin.id}).`)
-  console.log('IMPORTANTE: cambia la contraseña por defecto después del primer uso.')
 }
 
-main()
-  .catch((e) => {
+async function main() {
+  const existente = await checkExistingAdmin()
+  if (existente) {
+    console.log(`Ya existe un Administrador ("${existente.usuario}"). No se creará otro.`)
+    return
+  }
+
+  const rl = readline.createInterface({
+    input: process.stdin,
+    output: process.stdout,
+  })
+
+  function preguntar(texto) {
+    return new Promise((resolve) => rl.question(texto, resolve))
+  }
+
+  console.log('=== Crear Administrador inicial ===')
+  const usuario = await preguntar('Usuario: ')
+  if (!usuario.trim()) {
+    console.error('Error: el usuario no puede estar vacío.')
+    rl.close()
+    process.exit(1)
+  }
+
+  const contraseña = await preguntar('Contraseña (mínimo 8 caracteres): ')
+  if (contraseña.length < 8) {
+    console.error('Error: la contraseña debe tener al menos 8 caracteres.')
+    rl.close()
+    process.exit(1)
+  }
+
+  const admin = await createAdmin(usuario, contraseña)
+  console.log(`\nUsuario Administrador creado: usuario="${usuario.trim()}" (id=${admin.id}).`)
+  console.log('Guarda estas credenciales de forma segura.')
+  
+  rl.close()
+}
+
+async function run() {
+  try {
+    await main()
+  } catch (e) {
     console.error(e)
     process.exit(1)
-  })
-  .finally(() => prisma.$disconnect())
+  } finally {
+    await prisma.$disconnect()
+  }
+}
+
+run()

@@ -246,7 +246,14 @@ function RepartidorHomePage() {
       }
       await cargar()
     } catch (err) {
-      setError(err.message)
+      // Mensaje claro si el pedido ya fue cancelado
+      if (err.status === 400 && /cancelado/i.test(err.message || '')) {
+        setError(
+          'Este pedido fue cancelado mientras estabas en camino. NO marques como entregado - contacta al negocio de inmediato para resolver qué pasó con el producto/cobro.',
+        )
+      } else {
+        setError(err.message)
+      }
       await cargar()
     } finally {
       setOcupadoId(null)

@@ -1,16 +1,17 @@
 import { PrismaClient } from '@prisma/client'
 import bcrypt from 'bcrypt'
 
-const prisma = new PrismaClient()
+const prisma = new PrismaClient({ datasources: { db: { url: 'file:./sec_test.db' } } })
 const BASE = 'http://localhost:3001'
 let fallas = 0
 let token = null
 
-function ok(cond, nombre) {
+function ok(cond, nombre, res = null) {
   if (cond) console.log(`  OK  ${nombre}`)
   else {
     fallas++
-    console.log(`FALLA ${nombre}`)
+    const extra = res ? ` | status: ${res.status} | body: ${JSON.stringify(res.data)}` : ''
+    console.log(`FALLA ${nombre}${extra}`)
   }
 }
 
@@ -38,7 +39,11 @@ async function stockProducto(id) {
   return agg._sum.cantidad ?? 0
 }
 
-const admin = await prisma.usuario.create({ data: { tipo: 'Administrador', usuario: 'admin_test4', contraseña: await bcrypt.hash('x', 10) } })
+const admin = await prisma.usuario.upsert({
+  where: { usuario: 'admin_test4' },
+  update: {},
+  create: { tipo: 'Administrador', usuario: 'admin_test4', contraseña: await bcrypt.hash('x', 10) },
+})
 
 async function loginAdmin() {
   const res = await fetch(BASE + '/api/auth/login', {
@@ -48,7 +53,7 @@ async function loginAdmin() {
   })
   const data = await res.json()
   token = data.token
-  return res.status
+  return { status: res.status, data: res }
 }
 
 // Datos base
@@ -84,7 +89,8 @@ const dia = await prisma.dia_Operativo.create({ data: { fondoInicial: 0, estado:
 
 try {
   console.log('== Autenticación ==')
-  ok((await loginAdmin()) === 200, 'login admin')
+  const loginRes = await loginAdmin()
+  ok(loginRes.status === 200, 'login admin', loginRes)
 
   console.log('== Ventas ==')
   // A: 2 Torta, consume 4 de Harina (10->6)

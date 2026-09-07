@@ -14,6 +14,7 @@ async function main() {
   await prisma.pedido_Producto.deleteMany()
   await prisma.pedido.deleteMany()
   await prisma.gasto.deleteMany()
+  await prisma.ingresoManual.deleteMany()
   await prisma.movimiento_Inventario.deleteMany()
   await prisma.dia_Operativo.deleteMany()
   await prisma.combo_Producto.deleteMany()

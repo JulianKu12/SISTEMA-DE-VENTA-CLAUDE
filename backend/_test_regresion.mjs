@@ -14,11 +14,25 @@ const suites = [
   '_test_modulo7.mjs',
 ]
 
+async function cleanDb() {
+  return new Promise((resolve, reject) => {
+    const child = spawn(process.execPath, ['prisma/clean-test-db2.js'], { 
+      stdio: 'inherit',
+      env: { ...process.env, DATABASE_URL: 'file:./sec_test.db' }
+    })
+    child.on('exit', (code) => {
+      if (code === 0) resolve()
+      else reject(new Error(`clean-test-db2.js exited with code ${code}`))
+    })
+  })
+}
+
 let totalFallas = 0
 let totalOk = 0
 
 console.log('== REGRESIÓN COMPLETA: 5 suites en una sola corrida ==\n')
 for (const s of suites) {
+  await cleanDb()
   await new Promise((resolve) => {
     const child = spawn(process.execPath, [s], { stdio: ['ignore', 'pipe', 'inherit'] })
     let out = ''

@@ -228,7 +228,7 @@ function PedidosPage() {
     <main className="min-h-screen bg-surface pb-16">
       <div className="sticky top-0 z-30 border-b border-muted/10 bg-surface/90 backdrop-blur-md">
         <div className="mx-auto flex max-w-7xl items-center justify-between gap-4 px-4 py-4 sm:px-6 lg:px-8">
-          <h1 className="min-w-0 truncate text-2xl font-bold text-ink">Pedidos de hoy</h1>
+          <h1 className="min-w-0 truncate text-2xl font-bold text-ink"></h1>
           <div className="flex shrink-0 items-center gap-2">
             <Button
               size="lg"

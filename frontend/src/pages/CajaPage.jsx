@@ -8,7 +8,9 @@ import {
   cerrarCaja,
   completarCorte,
   crearGasto,
+  crearIngresoManual,
   listarGastos,
+  listarIngresosManuales,
   obtenerEstadoCaja,
   obtenerHistorialCaja,
   obtenerVentas,
@@ -732,6 +734,121 @@ function ModalFormularioGasto({ onCerrar, onGuardar }) {
   )
 }
 
+function ModalFormularioIngresoManual({ onCerrar, onGuardar }) {
+  const [monto, setMonto] = useState('')
+  const [metodoPago, setMetodoPago] = useState('Efectivo')
+  const [motivo, setMotivo] = useState('')
+  const [error, setError] = useState('')
+  const [enviando, setEnviando] = useState(false)
+
+  const guardar = async (e) => {
+    e.preventDefault()
+    setError('')
+    if (monto === '' || Number(monto) <= 0) return setError('El monto debe ser mayor a 0')
+    if (!motivo.trim()) return setError('El motivo es obligatorio (texto libre para auditoría)')
+
+    setEnviando(true)
+    try {
+      await onGuardar({
+        monto: Number(monto),
+        metodoPago,
+        motivo: motivo.trim(),
+      })
+      onCerrar()
+    } catch (err) {
+      setError(err.message)
+    } finally {
+      setEnviando(false)
+    }
+  }
+
+  return (
+    <ModalHoja
+      abierto
+      titulo="Nuevo ingreso manual"
+      subtitulo={
+        'Registra dinero que entra a caja sin ser venta de productos (ej. cobro de pedido cancelado que ya se entregó). Si no hay caja abierta, el ingreso queda pendiente de asociarse a la próxima apertura.'
+      }
+      onCerrar={onCerrar}
+    >
+      <form onSubmit={guardar} className="space-y-5">
+      {error && (
+        <div className="rounded-2xl bg-danger/10 px-4 py-3 text-sm font-medium text-danger">
+          {error}
+        </div>
+      )}
+
+        <div className="space-y-1.5">
+          <label className="block text-sm font-semibold text-ink" htmlFor="ing-monto">
+            Monto
+          </label>
+          <input
+            id="ing-monto"
+            className={CLASE_INPUT}
+            type="number"
+            min="0.01"
+            step="any"
+            inputMode="decimal"
+            value={monto}
+            onChange={(e) => setMonto(e.target.value)}
+            placeholder="0.00"
+            autoFocus
+          />
+        </div>
+        <div className="grid grid-cols-2 gap-3">
+          <div className="space-y-1.5">
+            <label className="block text-sm font-semibold text-ink" htmlFor="ing-metodo">
+              Método de pago
+            </label>
+            <select
+              id="ing-metodo"
+              className={CLASE_INPUT}
+              value={metodoPago}
+              onChange={(e) => setMetodoPago(e.target.value)}
+            >
+              {METODOS_PAGO.map((mp) => (
+                <option key={mp} value={mp}>
+                  {mp}
+                </option>
+              ))}
+            </select>
+          </div>
+        </div>
+        <div className="space-y-1.5">
+          <label className="block text-sm font-semibold text-ink" htmlFor="ing-motivo">
+            Motivo (obligatorio - auditoría)
+          </label>
+          <textarea
+            id="ing-motivo"
+            className={CLASE_INPUT}
+            value={motivo}
+            onChange={(e) => setMotivo(e.target.value)}
+            placeholder="Ej. Cobro de pedido #123 cancelado pero ya entregado por repartidor"
+            rows={3}
+          />
+        </div>
+        <div className="flex gap-3 pt-2">
+          <button
+            type="button"
+            onClick={onCerrar}
+            disabled={enviando}
+            className="inline-flex min-h-12 flex-1 select-none items-center justify-center gap-2 rounded-full bg-muted/10 px-5 py-3 text-base font-semibold text-ink transition duration-150 ease-out active:scale-[0.97] focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/40 disabled:opacity-50"
+          >
+            Cancelar
+          </button>
+          <button
+            type="submit"
+            disabled={enviando}
+            className="inline-flex min-h-12 flex-1 select-none items-center justify-center gap-2 rounded-full bg-accent px-5 py-3 text-base font-semibold text-white shadow-[0_4px_14px_rgb(0_122_255/0.35)] transition duration-150 ease-out active:scale-[0.97] focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/40 disabled:opacity-50"
+          >
+            {enviando ? 'Guardando…' : 'Guardar'}
+          </button>
+        </div>
+      </form>
+    </ModalHoja>
+  )
+}
+
 function FilaResumen({ etiqueta, valor, tono }) {
   return (
     <div className="flex items-center justify-between rounded-2xl bg-surface px-4 py-3">
@@ -746,6 +863,7 @@ function CajaPage({ pestanaInicial = 'caja' }) {
   const [pestana, setPestana] = useState(pestanaInicial)
   const [estado, setEstado] = useState(null)
   const [gastos, setGastos] = useState(null)
+  const [ingresosManuales, setIngresosManuales] = useState(null)
   const [historial, setHistorial] = useState(null)
   const [productos, setProductos] = useState([])
   const [combos, setCombos] = useState([])
@@ -756,20 +874,24 @@ function CajaPage({ pestanaInicial = 'caja' }) {
   const [modalAbrir, setModalAbrir] = useState(null)
   const [modalCerrar, setModalCerrar] = useState(false)
   const [modalGasto, setModalGasto] = useState(false)
+  const [modalIngresoManual, setModalIngresoManual] = useState(false)
   const [resultadoCierre, setResultadoCierre] = useState(null)
   const [resumen, setResumen] = useState(null)
   const [modalCompletar, setModalCompletar] = useState(null)
 
   const cargar = async () => {
-    const [e, g, h] = await Promise.allSettled([
+    const [e, g, i, h] = await Promise.allSettled([
       obtenerEstadoCaja(),
       listarGastos(),
+      listarIngresosManuales(),
       obtenerHistorialCaja(),
     ])
     if (e.status === 'fulfilled') setEstado(e.value)
     else setErrorLista((prev) => prev || e.reason.message)
     if (g.status === 'fulfilled') setGastos(g.value)
     else setErrorLista((prev) => prev || g.reason.message)
+    if (i.status === 'fulfilled') setIngresosManuales(i.value)
+    else setErrorLista((prev) => prev || i.reason.message)
     if (h.status === 'fulfilled') setHistorial(h.value)
     else setErrorLista((prev) => prev || h.reason.message)
   }
@@ -826,7 +948,15 @@ function CajaPage({ pestanaInicial = 'caja' }) {
     cargar()
   }
 
-  const armarResumen = (dia, ventas, todosGastos, todasDevoluciones) => {
+  const guardarIngresoManual = async (payload) => {
+    const res = await crearIngresoManual(payload)
+    setNotificacion(
+      res.asociadoASiguienteDia ? 'Ingreso manual registrado (se asociará a la próxima caja)' : 'Ingreso manual registrado',
+    )
+    cargar()
+  }
+
+  const armarResumen = (dia, ventas, todosGastos, todasDevoluciones, todosIngresosManuales) => {
     const ventasNormales = (ventas || []).filter((v) => !v.noCobrar && !v.esVentaPreviaApertura)
     const ventasEfectivo = ventasNormales
       .filter((v) => v.metodoPago === 'Efectivo')
@@ -852,6 +982,16 @@ function CajaPage({ pestanaInicial = 'caja' }) {
       .filter((d) => d.medioDevolucion === 'Efectivo_de_caja')
       .reduce((a, d) => a + d.monto, 0)
     const devolucionesTotal = devolucionesDia.reduce((a, d) => a + d.monto, 0)
+    const ingresosDia = (todosIngresosManuales || []).filter((i) => i.diaOperativoId === dia.id)
+    const ingresosEfectivo = ingresosDia
+      .filter((i) => i.metodoPago === 'Efectivo')
+      .reduce((a, i) => a + i.monto, 0)
+    const ingresosTarjeta = ingresosDia
+      .filter((i) => i.metodoPago === 'Tarjeta')
+      .reduce((a, i) => a + i.monto, 0)
+    const ingresosTransferencia = ingresosDia
+      .filter((i) => i.metodoPago === 'Transferencia')
+      .reduce((a, i) => a + i.monto, 0)
     return {
       totalVentas: ventasNormales.length,
       ventasEfectivo,
@@ -862,19 +1002,23 @@ function CajaPage({ pestanaInicial = 'caja' }) {
       gastosTransferencia,
       devolucionesEfectivoCaja,
       devolucionesTotal,
-      esperado: dia.fondoInicial + ventasEfectivo - gastosEfectivo - devolucionesEfectivoCaja,
+      ingresosEfectivo,
+      ingresosTarjeta,
+      ingresosTransferencia,
+      esperado: dia.fondoInicial + ventasEfectivo - gastosEfectivo - devolucionesEfectivoCaja + ingresosEfectivo,
     }
   }
 
   const abrirResumen = async (dia) => {
     setErrorLista('')
     try {
-      const [ventas, todosGastos, todasDevoluciones] = await Promise.all([
+      const [ventas, todosGastos, todasDevoluciones, todosIngresosManuales] = await Promise.all([
         obtenerVentas(dia.id),
         listarGastos(),
         listarDevoluciones(),
+        listarIngresosManuales(),
       ])
-      setResumen(armarResumen(dia, ventas, todosGastos, todasDevoluciones))
+      setResumen(armarResumen(dia, ventas, todosGastos, todasDevoluciones, todosIngresosManuales))
     } catch (err) {
       setErrorLista(err.message)
     }
@@ -883,14 +1027,15 @@ function CajaPage({ pestanaInicial = 'caja' }) {
   const abrirCompletar = async (corte) => {
     setErrorLista('')
     try {
-      const [ventas, todosGastos, todasDevoluciones] = await Promise.all([
+      const [ventas, todosGastos, todasDevoluciones, todosIngresosManuales] = await Promise.all([
         obtenerVentas(corte.id),
         listarGastos(),
         listarDevoluciones(),
+        listarIngresosManuales(),
       ])
       setModalCompletar({
         corte,
-        desglose: armarResumen(corte, ventas, todosGastos, todasDevoluciones),
+        desglose: armarResumen(corte, ventas, todosGastos, todasDevoluciones, todosIngresosManuales),
       })
     } catch (err) {
       setErrorLista(err.message)
@@ -931,6 +1076,27 @@ function CajaPage({ pestanaInicial = 'caja' }) {
     return grupos
   })()
 
+  // Ingresos manuales agrupados por dia_operativo (fecha del corte).
+  const gruposIngresos = (() => {
+    if (!ingresosManuales) return null
+    const grupos = []
+    const porDia = new Map()
+    for (const ingreso of ingresosManuales) {
+      const key = ingreso.diaOperativoId ?? 'sin-dia'
+      if (!porDia.has(key)) {
+        const grupo = {
+          diaOperativoId: ingreso.diaOperativoId,
+          dia: ingreso.diaOperativo ?? null,
+          ingresos: [],
+        }
+        porDia.set(key, grupo)
+        grupos.push(grupo)
+      }
+      porDia.get(key).ingresos.push(ingreso)
+    }
+    return grupos
+  })()
+
   return (
     <main className="min-h-screen bg-surface pb-16">
       <header className="sticky top-0 z-30 border-b border-muted/10 bg-surface/90 backdrop-blur-md">
@@ -965,10 +1131,11 @@ function CajaPage({ pestanaInicial = 'caja' }) {
           </div>
         )}
 
-        <div className="grid grid-cols-2 gap-1 rounded-full bg-input p-1">
+        <div className="grid grid-cols-3 gap-1 rounded-full bg-input p-1">
           {[
             { id: 'caja', etiqueta: 'Caja' },
             { id: 'gastos', etiqueta: 'Gastos' },
+            { id: 'ingresos', etiqueta: 'Ingresos' },
           ].map((opcion) => {
             const activo = pestana === opcion.id
             return (
@@ -1199,6 +1366,69 @@ function CajaPage({ pestanaInicial = 'caja' }) {
             )}
           </section>
         )}
+
+        {!cargandoInicial && pestana === 'ingresos' && (
+          <section>
+            <div className="mb-3 flex items-center justify-between gap-3">
+              <EtiquetaSeccion>
+                {ingresosManuales?.length ?? 0} ingreso{ingresosManuales?.length === 1 ? '' : 's'}
+              </EtiquetaSeccion>
+              <Button size="md" onClick={() => setModalIngresoManual(true)}>
+                <IconoMas /> Nuevo ingreso
+              </Button>
+            </div>
+
+            {ingresosManuales === null ? (
+              <div className="rounded-3xl bg-card px-6 py-10 text-center text-sm text-muted shadow-card">
+                Cargando ingresos…
+              </div>
+            ) : ingresosManuales.length === 0 ? (
+              <div className="rounded-3xl bg-card px-6 py-12 text-center shadow-card">
+                <p className="text-sm text-muted">Aún no hay ingresos manuales registrados.</p>
+              </div>
+            ) : (
+              <div className="space-y-4">
+                {gruposIngresos.map((grupo) => (
+                  <div
+                    key={grupo.diaOperativoId ?? 'sin-dia'}
+                    className="overflow-hidden rounded-3xl bg-card shadow-card"
+                  >
+                    <div className="border-b border-muted/10 bg-surface/60 px-5 py-3">
+                      {grupo.dia ? (
+                        <p className="text-xs font-bold uppercase tracking-wide text-muted">
+                          Corte del {formatearFechaCorte(grupo.dia.fechaApertura)} ·{' '}
+                          {grupo.dia.estado}
+                        </p>
+                      ) : (
+                        <p className="text-xs font-bold uppercase tracking-wide text-amber-600">
+                          Pendiente de asociar a la próxima caja
+                        </p>
+                      )}
+                    </div>
+                    <ul className="divide-y divide-muted/10">
+                      {grupo.ingresos.map((ingreso) => (
+                        <li key={ingreso.id} className="px-5 py-4">
+                          <div className="flex flex-wrap items-center justify-between gap-2">
+                            <div className="min-w-0">
+                              <p className="truncate text-sm font-bold text-ink">{ingreso.motivo}</p>
+                              <p className="mt-0.5 text-xs text-muted">
+                                {ingreso.metodoPago} · {formatearFecha(ingreso.fechaHora)}
+                                {ingreso.usuario?.nombre && ` · ${ingreso.usuario.nombre}`}
+                              </p>
+                            </div>
+                            <span className="text-sm font-bold text-green-700">
+                              {formatearMonto(ingreso.monto)}
+                            </span>
+                          </div>
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                ))}
+              </div>
+            )}
+          </section>
+        )}
       </div>
 
       {modalAbrir && (
@@ -1225,6 +1455,13 @@ function CajaPage({ pestanaInicial = 'caja' }) {
         />
       )}
 
+      {modalIngresoManual && (
+        <ModalFormularioIngresoManual
+          onCerrar={() => setModalIngresoManual(false)}
+          onGuardar={guardarIngresoManual}
+        />
+      )}
+
       {modalCompletar && (
         <ModalCompletarCorte
           corte={modalCompletar.corte}
@@ -1246,6 +1483,9 @@ function CajaPage({ pestanaInicial = 'caja' }) {
             <FilaResumen etiqueta="Gastos por transferencia" valor={formatearMonto(resumen.gastosTransferencia)} />
             <FilaResumen etiqueta="Devoluciones en efectivo" valor={formatearMonto(resumen.devolucionesEfectivoCaja)} />
             <FilaResumen etiqueta="Devoluciones (total)" valor={formatearMonto(resumen.devolucionesTotal)} />
+            <FilaResumen etiqueta="Ingresos manuales en efectivo" valor={formatearMonto(resumen.ingresosEfectivo)} tono="text-green-700" />
+            <FilaResumen etiqueta="Ingresos manuales con tarjeta" valor={formatearMonto(resumen.ingresosTarjeta)} />
+            <FilaResumen etiqueta="Ingresos manuales por transferencia" valor={formatearMonto(resumen.ingresosTransferencia)} />
             <FilaResumen
               etiqueta="Efectivo esperado"
               valor={formatearMonto(resumen.esperado)}
@@ -1285,6 +1525,7 @@ function CajaPage({ pestanaInicial = 'caja' }) {
             <FilaResumen etiqueta="Gastos con tarjeta" valor={formatearMonto(resultadoCierre.gastos?.tarjeta)} />
             <FilaResumen etiqueta="Gastos por transferencia" valor={formatearMonto(resultadoCierre.gastos?.transferencia)} />
             <FilaResumen etiqueta="Devoluciones en efectivo" valor={formatearMonto(resultadoCierre.devolucionesEfectivoCaja)} />
+            <FilaResumen etiqueta="Ingresos manuales en efectivo" valor={formatearMonto(resultadoCierre.ingresosEfectivo)} tono="text-green-700" />
           </div>
           {(resultadoCierre.pedidosPendientesPago?.cantidad || 0) > 0 && (
             <div className="mt-4 rounded-2xl bg-amber-500/10 px-4 py-3 text-sm font-medium text-amber-600">
