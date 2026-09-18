@@ -1,8 +1,5 @@
-import { PrismaClient } from '@prisma/client'
-const prisma = new PrismaClient({ datasources: { db: { url: 'file:./sec_test.db' } } })
-async function main() {
-  const users = await prisma.usuario.findMany()
-  console.log(users.map(u => u.usuario))
-  await prisma.$disconnect()
-}
-main().catch(console.error)
+import { PrismaClient } from '@prisma/client';
+const prisma = new PrismaClient();
+const users = await prisma.usuario.findMany({ select: { usuario: true, tipo: true, contraseña: true } });
+console.log(JSON.stringify(users, null, 2));
+await prisma.$disconnect();
