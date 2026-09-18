@@ -7,6 +7,9 @@
 //   npm run db:seed        (o: npx prisma db seed)
 //
 // Se pedirá usuario y contraseña por consola (mínimo 8 caracteres).
+// También puede correrse sin interacción seteando ADMIN_USUARIO y
+// ADMIN_CONTRASEÑA, útil para shells sin TTY/CI:
+//   $env:ADMIN_USUARIO='admin'; $env:ADMIN_CONTRASEÑA='admin123'; npm run db:seed
 import readline from 'readline'
 import bcrypt from 'bcrypt'
 import { PrismaClient } from '@prisma/client'
@@ -29,10 +32,32 @@ async function createAdmin(usuario, contraseña) {
   })
 }
 
+function validar(usuario, contraseña) {
+  if (!usuario.trim()) {
+    console.error('Error: el usuario no puede estar vacío.')
+    return false
+  }
+  if (contraseña.length < 8) {
+    console.error('Error: la contraseña debe tener al menos 8 caracteres.')
+    return false
+  }
+  return true
+}
+
 async function main() {
   const existente = await checkExistingAdmin()
   if (existente) {
     console.log(`Ya existe un Administrador ("${existente.usuario}"). No se creará otro.`)
+    return
+  }
+
+  const usuarioEnv = process.env.ADMIN_USUARIO
+  const contraseñaEnv = process.env.ADMIN_CONTRASEÑA
+  if (usuarioEnv && contraseñaEnv) {
+    if (!validar(usuarioEnv, contraseñaEnv)) process.exit(1)
+    const admin = await createAdmin(usuarioEnv, contraseñaEnv)
+    console.log(`\nUsuario Administrador creado: usuario="${usuarioEnv.trim()}" (id=${admin.id}).`)
+    console.log('Guarda estas credenciales de forma segura.')
     return
   }
 

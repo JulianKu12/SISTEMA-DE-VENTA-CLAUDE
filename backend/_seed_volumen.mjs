@@ -1,11 +1,11 @@
 // Sembrador temporal de VOLUMEN (2 años, ~73,000 ventas) para prueba de
 // crecimiento/rendimiento. NO toca dev.db: usa la BD apuntada por DATABASE_URL
 // (sec_vol.db). Se elimina después de la medición.
-import { PrismaClient } from '@prisma/client'
+import { createTestPrisma } from './prisma/require-test-db.js'
 import bcrypt from 'bcrypt'
 import fs from 'node:fs'
 
-const prisma = new PrismaClient()
+const prisma = createTestPrisma()
 const rnd = () => Math.random()
 const ri = (min, max) => Math.floor(rnd() * (max - min + 1)) + min
 const pick = (arr, w = null) => {

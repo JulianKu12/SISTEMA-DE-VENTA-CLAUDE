@@ -29,7 +29,13 @@ const includePedido = {
   productos: {
     include: {
       producto: { select: { id: true, nombre: true, disponibleHoy: true, estado: true } },
-      combo: { select: { id: true, nombre: true } },
+      combo: {
+        select: {
+          id: true,
+          nombre: true,
+          productos: { select: { productoId: true, cantidad: true } },
+        },
+      },
       mitadYMitad: {
         include: {
           sabor1Producto: { select: { id: true, nombre: true } },
@@ -66,10 +72,22 @@ async function itemsDesdePp(tx, filas) {
   const gruposCombo = new Map()
   for (const pp of filas) {
     if (pp.comboId) {
-      if (!gruposCombo.has(pp.comboId)) {
-        gruposCombo.set(pp.comboId, { comboPrecioCongelado: pp.comboPrecioCongelado, filas: [] })
+      // Un combo se expande en varias filas (una por producto incluido). Un
+      // PEDIDO puede repetir el MISMO comboId con configuración distinta (notas
+      // o modificadores), así que la clave de agrupación es la línea del ítem
+      // (comboItemLinea) y no el comboId solo: de lo contrario los ítems se
+      // fusionarían y se cobraría de menos. En datos viejos sin línea se
+      // conserva la agrupación por comboId (comportamiento original).
+      const clave = pp.comboItemLinea != null ? `${pp.comboId}:${pp.comboItemLinea}` : `${pp.comboId}`
+      if (!gruposCombo.has(clave)) {
+        gruposCombo.set(clave, {
+          comboId: pp.comboId,
+          comboItemLinea: pp.comboItemLinea ?? null,
+          comboPrecioCongelado: pp.comboPrecioCongelado,
+          filas: [],
+        })
       }
-      gruposCombo.get(pp.comboId).filas.push(pp)
+      gruposCombo.get(clave).filas.push(pp)
     } else {
       items.push({
         productoId: pp.productoId,
@@ -92,16 +110,17 @@ async function itemsDesdePp(tx, filas) {
     }
   }
 
-  for (const [comboId, g] of gruposCombo) {
+  for (const [clave, g] of gruposCombo) {
     const combo = await tx.combo.findUnique({
-      where: { id: comboId },
+      where: { id: g.comboId },
       include: { productos: true },
     })
-    if (!combo) throw new HttpError(404, `El combo ${comboId} del pedido no existe`)
+    if (!combo) throw new HttpError(404, `El combo ${g.comboId} del pedido no existe`)
     const cpCant =
       combo.productos.find((cp) => cp.productoId === g.filas[0].productoId)?.cantidad || 1
     items.push({
-      comboId,
+      comboId: g.comboId,
+      comboItemLinea: g.comboItemLinea,
       cantidad: g.filas[0].cantidad / cpCant,
       precioCongelado: g.comboPrecioCongelado ?? combo.precioEspecial,
       nota: g.filas[0].notaCombo ?? undefined,
@@ -216,6 +235,17 @@ export const crearPedido = asyncHandler(async (req, res) => {
   const usuarioId = resolverUsuario(req)
 
   const resultado = await prisma.$transaction(async (tx) => {
+    // Toda captura de pedido exige caja abierta (docs/06): se reserva
+    // inventario SIEMPRE al crear el pedido, por lo que ningún pedido se
+    // captura con la caja cerrada (A_domicilio incluido).
+    const dia = await tx.dia_Operativo.findFirst({ where: { estado: 'Abierto' } })
+    if (!dia) {
+      throw new HttpError(
+        409,
+        'No hay una caja abierta (Dia_Operativo Abierto). Abre la caja antes de crear el pedido.'
+      )
+    }
+
     // Cliente: o el registrado (clienteId) o el nombre libre; ambos opcionales.
     if (clienteId != null) {
       const cliente = await tx.cliente.findUnique({ where: { id: Number(clienteId) } })
@@ -297,8 +327,12 @@ export const crearPedido = asyncHandler(async (req, res) => {
     // incluido, todas con el mismo comboId) y preparar los ítems congelados que
     // se reutilizarán si el pedido genera su Venta en este mismo flujo.
     const itemsVenta = []
+    // Línea de ítem-combo dentro del pedido: permite distinguir dos ítems del
+    // MISMO comboId con configuración distinta al reconstruirlos (docs/06).
+    let lineaComboActual = 0
     for (const it of itemsProcesados) {
       if (it.tipo === 'combo') {
+        const itemLinea = ++lineaComboActual
         const filas = []
         for (const dp of it.detalleProductos) {
           const pp = await tx.pedido_Producto.create({
@@ -310,9 +344,11 @@ export const crearPedido = asyncHandler(async (req, res) => {
               esMitadYMitad: false,
               comboId: it.comboId,
               comboPrecioCongelado: it.comboPrecioCongelado,
+              comboItemLinea: itemLinea,
               nota: dp.nota || null,
               // La nota general del combo se guarda en la primera fila expandida
-              // (todas comparten comboId) y se reconstruye leyendo filas[0].
+              // (todas comparten comboId y comboItemLinea) y se reconstruye
+              // leyendo filas[0].
               ...(filas.length === 0 ? { notaCombo: it.nota || null } : {}),
             },
           })
@@ -407,13 +443,6 @@ export const crearPedido = asyncHandler(async (req, res) => {
     // crea la Venta y re-vincula la reserva ya hecha (no descuenta de nuevo).
     let venta = null
     if (estadoPagoInicial === 'Pagado') {
-      const dia = await tx.dia_Operativo.findFirst({ where: { estado: 'Abierto' } })
-      if (!dia) {
-        throw new HttpError(
-          409,
-          'No hay una caja abierta (Dia_Operativo Abierto). Abre la caja para cobrar el pedido al capturarlo.'
-        )
-      }
       const r = await crearVentaPedido(tx, {
         productos: itemsVenta,
         metodoPago: noCobrar ? 'Efectivo' : montoResuelto,
@@ -832,16 +861,36 @@ export const editarPedido = asyncHandler(async (req, res) => {
         }
         let filas
         if (u.comboId != null) {
+          const whereCombo = { pedidoId: pedido.id, comboId: Number(u.comboId) }
+          // La cantidad de un combo se actualiza por LÍNEA (comboItemLinea): si
+          // el pedido repite el mismo comboId con config distinta, editar sin
+          // línea afectaría los dos ítems a la vez.
+          if (u.comboItemLinea != null) whereCombo.comboItemLinea = Number(u.comboItemLinea)
           filas = await tx.pedido_Producto.findMany({
-            where: { pedidoId: pedido.id, comboId: Number(u.comboId) },
+            where: whereCombo,
             include: { mitadYMitad: true, modificadores: true },
           })
           if (filas.length === 0) {
             throw new HttpError(404, 'No hay líneas con ese comboId en este pedido')
           }
-          await tx.pedido_Producto.updateMany({
-            where: { pedidoId: pedido.id, comboId: Number(u.comboId) },
-            data: { cantidad: u.cantidad },
+          // La cantidad se expresa en UNIDADES DE COMBO, pero cada fila expandida
+          // guarda cantidadCombos × cp.cantidad por producto incluido.
+          const combo = await tx.combo.findUnique({
+            where: { id: Number(u.comboId) },
+            include: { productos: true },
+          })
+          const cpPorProducto = new Map()
+          for (const cp of combo?.productos || []) cpPorProducto.set(cp.productoId, cp.cantidad)
+          for (const f of filas) {
+            const cpCant = cpPorProducto.get(f.productoId) ?? 1
+            await tx.pedido_Producto.update({
+              where: { id: f.id },
+              data: { cantidad: u.cantidad * cpCant },
+            })
+          }
+          filas = await tx.pedido_Producto.findMany({
+            where: whereCombo,
+            include: { mitadYMitad: true, modificadores: true },
           })
         } else if (u.pedidoProductoId != null) {
           const pp = await tx.pedido_Producto.findFirst({
@@ -860,12 +909,11 @@ export const editarPedido = asyncHandler(async (req, res) => {
 
         // Ajustar la reserva de inventario de las líneas afectadas: se cancelan
         // las Salida_venta EXACTAS previas y se reservan las cantidades nuevas.
+        // (filas ya traen las cantidades recién guardadas, combinando para
+        // combos: unidadesDeCombo × cp.cantidad.)
         await cancelarReservasDePpIds(tx, filas.map((f) => f.id), pedido.id)
         const reserva = await descontarInventarioPedido(tx, {
-          productos: await itemsDesdePp(
-            tx,
-            filas.map((f) => ({ ...f, cantidad: u.cantidad }))
-          ),
+          productos: await itemsDesdePp(tx, filas),
           pedidoId: pedido.id,
           usarDisponible,
           confiarCongelado: true,
@@ -927,9 +975,19 @@ export const editarPedido = asyncHandler(async (req, res) => {
       }
 
       const nuevosIds = []
+      // Línea base para los combos nuevos: nunca colisionar con los ítems-combo
+      // existentes del pedido (aunque se hayan quitado y vuelto a agregar).
+      const maxLineaExistente =
+        (
+          await tx.pedido_Producto.aggregate({
+            where: { pedidoId: pedido.id },
+            _max: { comboItemLinea: true },
+          })
+        )._max.comboItemLinea ?? 0
       for (const item of agregarProductos) {
         const it = await procesarItem(tx, item)
         if (it.tipo === 'combo') {
+          const itemLinea = ++maxLineaExistente
           let primeraFila = true
           for (const dp of it.detalleProductos) {
             const pp = await tx.pedido_Producto.create({
@@ -941,6 +999,7 @@ export const editarPedido = asyncHandler(async (req, res) => {
                 esMitadYMitad: false,
                 comboId: it.comboId,
                 comboPrecioCongelado: it.comboPrecioCongelado,
+                comboItemLinea: itemLinea,
                 nota: dp.nota || null,
                 ...(primeraFila ? { notaCombo: it.nota || null } : {}),
               },
@@ -1029,8 +1088,13 @@ export const editarPedido = asyncHandler(async (req, res) => {
     const combosContados = new Set()
     for (const pp of productosFinales) {
       if (pp.comboId) {
-        if (combosContados.has(pp.comboId)) continue
-        combosContados.add(pp.comboId)
+        // Las filas expandidas de un combo contribuyen UNA vez por ítem (línea),
+        // no una vez por comboId: dos ítems del mismo comboId con config distinta
+        // suman ambos.
+        const claveCombo =
+          pp.comboItemLinea != null ? `${pp.comboId}:${pp.comboItemLinea}` : `${pp.comboId}`
+        if (combosContados.has(claveCombo)) continue
+        combosContados.add(claveCombo)
         const cpCant = mapaCp.get(`${pp.comboId}:${pp.productoId}`) ?? 1
         total += pp.comboPrecioCongelado * (pp.cantidad / cpCant)
       } else {

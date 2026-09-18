@@ -480,6 +480,12 @@ model Pedido_Producto {
   esMitadYMitad   Boolean @default(false)
   comboId         Int?
   comboPrecioCongelado Float?
+  // Identifica la LÍNEA (ítem) de un combo dentro del pedido: un combo se
+  // expande en varias filas (una por producto incluido) y este número distingue
+  // un ítem-combo de otro con el mismo comboId (p. ej. mismo combo con notas o
+  // modificadores distintos). Todas las filas de un ítem comparten el mismo
+  // valor. Nunca cambia al editar el pedido.
+  comboItemLinea  Int?
   nota            String?
   notaCombo       String?
 

@@ -106,6 +106,18 @@ try {
   const upEmp2 = await req('PATCH', `/api/empleados/${emp.data.id}`, { estadoDisponibilidad: 'Disponible' })
   ok(upEmp2.status === 200, 'repartidor disponible de nuevo')
 
+  console.log('== Caja cerrada bloquea captura de pedidos ==')
+  const bloqueoCajaCerrada = await req('POST', '/api/pedidos', {
+    tipo: 'A_domicilio', origen: 'Telefono', nombreClienteLibre: 'Cliente',
+    referenciaLibre: 'Dirección X',
+    productos: [{ productoId: coca.id, cantidad: 1 }],
+    metodoPago: 'Efectivo', montoReferenciaPago: 20,
+  })
+  ok(
+    bloqueoCajaCerrada.status === 409 && /Abre la caja/.test(bloqueoCajaCerrada.data.message),
+    'pedido con caja cerrada -> 409 con aviso de abrir caja'
+  )
+
   console.log('== Abrir caja ==')
   const abrir = await req('POST', '/api/caja/abrir', { fondoInicial: 100, usuarioId: admin.id })
   ok(abrir.status === 201 && abrir.data.diaOperativo.estado === 'Abierto', 'caja abierta')
@@ -328,8 +340,11 @@ try {
   ok(pCombo.data.total === 35, 'pedido combo total 35 (precio del combo, no suma de productos)')
   ok(pCombo.data.venta && pCombo.data.venta.total === 35, 'venta generada del combo total 35')
   ok(pCombo.data.productos.length === 2, 'pedido combo expandido en 2 filas (una por producto)')
+  // Antes del combo: 5 (p1 -2, p2/p3/p4 -1 c/u, edicion P3 neta -1,
+  // pAviso reserva 1 coca que se cancela con regresaAInventario:false y nunca
+  // regresa, cancel P1 +2). El combo reserva 1 reventa al CREAR: 5 -> 4.
   const stockCocaCombo = await stockProducto(coca.id)
-  ok(stockCocaCombo === 5, 'combo reserva reventa al CREAR (coca 6->5) | actual=' + stockCocaCombo)
+  ok(stockCocaCombo === 4, 'combo reserva reventa al CREAR (coca 5->4) | actual=' + stockCocaCombo)
   const stockHarina6 = await prisma.movimiento_Inventario.aggregate({ _sum: { cantidad: true }, where: { ingredienteId: harina.id } })
   ok(stockHarina6._sum.cantidad === 6, 'combo reserva la receta al CREAR (harina 8->6)')
 
@@ -418,6 +433,144 @@ try {
   const pagarComboS6 = await req('PATCH', `/api/pedidos/${pComboS6.data.id}/estado-pago`, { estadoPago: 'Pagado', usuarioId: admin.id })
   ok(pagarComboS6.status === 200 && pagarComboS6.data.venta.total === 30, 'pago del combo+Sustituir -> venta 30')
   ok((await stockIngrediente(ingB6.id)) === stockIngB6_0 - 3, 'pagar NO vuelve a descontar el sustituto (reserva ya hecha)')
+
+  console.log('== Combo repetido con config distinta: se cobra CADA ítem ==')
+  const ingDup6 = await prisma.ingrediente.create({ data: { nombre: 'IngDup6', unidadMedida: 'kg', stockActual: 100, stockMinimoAlerta: 0 } })
+  await prisma.movimiento_Inventario.create({ data: { ingredienteId: ingDup6.id, tipoMovimiento: 'Entrada', cantidad: 100 } })
+  const dupA6 = await prisma.producto.create({ data: { nombre: 'DupA6', precio: 10, tipo: 'Con_receta' } })
+  await prisma.producto_Ingrediente.create({ data: { productoId: dupA6.id, ingredienteId: ingDup6.id, cantidad: 1 } })
+  const dupB6 = await prisma.producto.create({ data: { nombre: 'DupB6', precio: 10, tipo: 'Con_receta' } })
+  await prisma.producto_Ingrediente.create({ data: { productoId: dupB6.id, ingredienteId: ingDup6.id, cantidad: 1 } })
+  const comboDup6 = await prisma.combo.create({ data: { nombre: 'ComboDup6', precioEspecial: 40 } })
+  await prisma.combo_Producto.create({ data: { comboId: comboDup6.id, productoId: dupA6.id, cantidad: 1 } })
+  await prisma.combo_Producto.create({ data: { comboId: comboDup6.id, productoId: dupB6.id, cantidad: 1 } })
+
+  // Antes del fix, itemsDesdePp agrupaba SOLO por comboId y fusionaba los dos
+  // ítems del MISMO combo (nota distinta) en uno solo: al pagar se cobraban 40
+  // en vez de 80 (dinero de menos). Ahora cada ítem tiene su comboItemLinea.
+  const stockDup6_0 = await stockIngrediente(ingDup6.id)
+  const pDup6 = await req('POST', '/api/pedidos', {
+    tipo: 'Para_recoger', origen: 'Telefono', nombreClienteLibre: 'Combo repetido 6',
+    productos: [
+      { comboId: comboDup6.id, cantidad: 1, nota: 'una nota' },
+      { comboId: comboDup6.id, cantidad: 1, nota: 'otra nota' },
+    ],
+    metodoPago: 'Efectivo', montoReferenciaPago: 200,
+    usuarioId: admin.id,
+  })
+  ok(pDup6.status === 201 && pDup6.data.estadoPago === 'Pendiente_pago', 'pedido con el MISMO combo 2 veces (nota distinta) -> Pendiente_pago')
+  ok(pDup6.data.total === 80, 'pedido con combo repetido -> total 80 (2 x 40, cada ítem se cobra) | actual=' + pDup6.data.total)
+  ok(pDup6.data.productos.length === 4, 'pedido combo repetido expandido en 4 filas (2 ítems x 2 productos)')
+  const lineasDup6 = [...new Set(pDup6.data.productos.map((pp) => pp.comboItemLinea).filter((l) => l != null))]
+  ok(lineasDup6.length === 2, 'las filas distinguen 2 LÍNEAS del combo por comboItemLinea | ' + JSON.stringify(lineasDup6))
+  const filasPorLineaOk = lineasDup6.every(
+    (l) => pDup6.data.productos.filter((pp) => pp.comboItemLinea === l).length === 2
+  )
+  ok(filasPorLineaOk, 'cada línea del combo agrupa exactamente sus 2 filas expandidas')
+  ok((await stockIngrediente(ingDup6.id)) === stockDup6_0 - 4, 'reserva al CREAR descuenta los 2 ítems (ingDup6 ' + stockDup6_0 + ' -> ' + (stockDup6_0 - 4) + ')')
+  const pagarDup6 = await req('PATCH', `/api/pedidos/${pDup6.data.id}/estado-pago`, { estadoPago: 'Pagado', usuarioId: admin.id })
+  ok(pagarDup6.status === 200 && pagarDup6.data.venta.total === 80, 'pago del combo repetido -> venta total 80 (bug: antes cobraba 40) | venta=' + (pagarDup6.data.venta?.total))
+  ok((await stockIngrediente(ingDup6.id)) === stockDup6_0 - 4, 'pagar NO vuelve a descontar el combo repetido (reserva ya hecha)')
+
+  // Editar por LÍNEA afecta solo el ítem elegido del mismo comboId repetido.
+  const duplicarLinea = await req('POST', '/api/pedidos', {
+    tipo: 'Para_recoger', origen: 'Telefono', nombreClienteLibre: 'Combo repetido editar 6',
+    productos: [
+      { comboId: comboDup6.id, cantidad: 1, nota: 'l1' },
+      { comboId: comboDup6.id, cantidad: 1, nota: 'l2' },
+    ],
+    metodoPago: 'Efectivo', montoReferenciaPago: 500,
+    usuarioId: admin.id,
+  })
+  const linea1 = [...new Set(duplicarLinea.data.productos.map((pp) => pp.comboItemLinea))].find(
+    (l) => duplicarLinea.data.productos.find((pp) => pp.comboItemLinea === l)?.notaCombo === 'l1'
+  )
+  const stockDup6_edit = await stockIngrediente(ingDup6.id)
+  const editarLineaDup = await req('PATCH', `/api/pedidos/${duplicarLinea.data.id}`, {
+    actualizarProductos: [{ comboId: comboDup6.id, comboItemLinea: linea1, cantidad: 2 }],
+    usuarioId: admin.id,
+  })
+  ok(editarLineaDup.status === 200 && editarLineaDup.data.pedido.total === 120, 'editar por LÍNEA una de las dos -> total 120 ((2+1) x 40) | total=' + editarLineaDup.data?.pedido?.total)
+  const filasLinea1 = (editarLineaDup.data.pedido.productos || []).filter((pp) => pp.comboItemLinea === linea1)
+  ok(filasLinea1.length === 2 && filasLinea1.every((f) => f.cantidad === 2), 'la línea editada guarda cantidad 2 en sus 2 filas')
+  ok((await stockIngrediente(ingDup6.id)) === stockDup6_edit - 2, 'editar línea a 2 unidades consume 2 más (ingDup6 ' + stockDup6_edit + ' -> ' + (stockDup6_edit - 2) + ') | actual=' + (await stockIngrediente(ingDup6.id)))
+  const pagarEditoDup = await req('PATCH', `/api/pedidos/${duplicarLinea.data.id}/estado-pago`, { estadoPago: 'Pagado', usuarioId: admin.id })
+  ok(pagarEditoDup.status === 200, 'pagar el pedido editado para no dejar pendientes')
+
+  console.log('== Edición de combo con cp.cantidad > 1 (cantidad = unidades de combo x cp) ==')
+  const ingCp6 = await prisma.ingrediente.create({ data: { nombre: 'IngCp6', unidadMedida: 'kg', stockActual: 100, stockMinimoAlerta: 0 } })
+  await prisma.movimiento_Inventario.create({ data: { ingredienteId: ingCp6.id, tipoMovimiento: 'Entrada', cantidad: 100 } })
+  const prodCp6 = await prisma.producto.create({ data: { nombre: 'ProdCp6', precio: 10, tipo: 'Con_receta' } })
+  await prisma.producto_Ingrediente.create({ data: { productoId: prodCp6.id, ingredienteId: ingCp6.id, cantidad: 1 } })
+  const comboCp6 = await prisma.combo.create({ data: { nombre: 'ComboCp6', precioEspecial: 50 } })
+  await prisma.combo_Producto.create({ data: { comboId: comboCp6.id, productoId: prodCp6.id, cantidad: 2 } })
+
+  const stockCp6_0 = await stockIngrediente(ingCp6.id)
+  const pCp6 = await req('POST', '/api/pedidos', {
+    tipo: 'Para_recoger', origen: 'Telefono', nombreClienteLibre: 'Combo cp 6',
+    productos: [{ comboId: comboCp6.id, cantidad: 1 }],
+    metodoPago: 'Efectivo', montoReferenciaPago: 500,
+    usuarioId: admin.id,
+  })
+  ok(pCp6.status === 201 && pCp6.data.total === 50, 'pedido combo cp.cantidad=2 -> total 50 (1 unidad de combo)')
+  ok(pCp6.data.productos.length === 1 && pCp6.data.productos[0].cantidad === 2, 'la única fila expandida guarda cantidad 2 (1 combo x cp 2)')
+  ok((await stockIngrediente(ingCp6.id)) === stockCp6_0 - 2, 'reserva al CREAR descuenta cp.cantidad x unidades (ingCp6 -2)')
+  const lineaCp6 = pCp6.data.productos[0].comboItemLinea
+  const editarCp6 = await req('PATCH', `/api/pedidos/${pCp6.data.id}`, {
+    actualizarProductos: [{ comboId: comboCp6.id, comboItemLinea: lineaCp6, cantidad: 3 }],
+    usuarioId: admin.id,
+  })
+  ok(editarCp6.status === 200 && editarCp6.data.pedido.total === 150, 'editar combo cp>1 a 3 unidades -> 200 y total 150 (bug: antes 400 con cantidad fraccionaria) | total=' + editarCp6.data?.pedido?.total)
+  const filaCp6 = (editarCp6.data.pedido.productos || [])[0]
+  ok(filaCp6?.cantidad === 6, 'fila guarda cantidad 6 (3 combos x cp 2)')
+  ok((await stockIngrediente(ingCp6.id)) === stockCp6_0 - 6, 'reserva ajustada a -6 tras editar (ingCp6) | actual=' + (await stockIngrediente(ingCp6.id)))
+  const pagarCp6 = await req('PATCH', `/api/pedidos/${pCp6.data.id}/estado-pago`, { estadoPago: 'Pagado', usuarioId: admin.id })
+  ok(pagarCp6.status === 200, 'pagar el pedido cp>1 para no dejar pendientes')
+
+  console.log('== Dos combos DISTINTOS en el mismo pedido/venta: se cobran por separado ==')
+  // ComboId DISTINTOS en una misma operación: la agrupación por comboId los
+  // mantiene como ítems separados (nunca se fusionan ni se pierde ninguno).
+  const ingMix6 = await prisma.ingrediente.create({ data: { nombre: 'IngMix6', unidadMedida: 'kg', stockActual: 100, stockMinimoAlerta: 0 } })
+  await prisma.movimiento_Inventario.create({ data: { ingredienteId: ingMix6.id, tipoMovimiento: 'Entrada', cantidad: 100 } })
+  const mixA6 = await prisma.producto.create({ data: { nombre: 'MixA6', precio: 10, tipo: 'Con_receta' } })
+  await prisma.producto_Ingrediente.create({ data: { productoId: mixA6.id, ingredienteId: ingMix6.id, cantidad: 1 } })
+  const mixB6 = await prisma.producto.create({ data: { nombre: 'MixB6', precio: 10, tipo: 'Con_receta' } })
+  await prisma.producto_Ingrediente.create({ data: { productoId: mixB6.id, ingredienteId: ingMix6.id, cantidad: 1 } })
+  const comboMixX = await prisma.combo.create({ data: { nombre: 'ComboMixX6', precioEspecial: 40 } })
+  await prisma.combo_Producto.create({ data: { comboId: comboMixX.id, productoId: mixA6.id, cantidad: 1 } })
+  const comboMixY = await prisma.combo.create({ data: { nombre: 'ComboMixY6', precioEspecial: 60 } })
+  await prisma.combo_Producto.create({ data: { comboId: comboMixY.id, productoId: mixB6.id, cantidad: 1 } })
+
+  const stockMix6_0 = await stockIngrediente(ingMix6.id)
+  const pMix6 = await req('POST', '/api/pedidos', {
+    tipo: 'Para_recoger', origen: 'Telefono', nombreClienteLibre: 'Combos distintos 6',
+    productos: [
+      { comboId: comboMixX.id, cantidad: 1 },
+      { comboId: comboMixY.id, cantidad: 1 },
+    ],
+    metodoPago: 'Efectivo', montoReferenciaPago: 200,
+    usuarioId: admin.id,
+  })
+  ok(pMix6.status === 201 && pMix6.data.total === 100, 'pedido con 2 combos DISTINTOS -> total 100 (40 + 60, ninguno se pierde) | actual=' + pMix6.data.total)
+  ok(pMix6.data.productos.length === 2, 'pedido con 2 combos distintos expandido en 2 filas (una por combo)')
+  const combosMix6 = new Set(pMix6.data.productos.map((pp) => pp.comboId))
+  ok(combosMix6.size === 2, 'los 2 combos quedan como filas separadas por comboId | ' + JSON.stringify([...combosMix6]))
+  const lineasMix6 = new Set(pMix6.data.productos.map((pp) => pp.comboItemLinea))
+  ok(lineasMix6.size === 2, 'cada combo distinto tiene ademas su propia comboItemLinea | ' + JSON.stringify([...lineasMix6]))
+  ok((await stockIngrediente(ingMix6.id)) === stockMix6_0 - 2, 'reserva al CREAR descuenta AMBOS combos (ingMix6 -2)')
+  const pagarMix6 = await req('PATCH', `/api/pedidos/${pMix6.data.id}/estado-pago`, { estadoPago: 'Pagado', usuarioId: admin.id })
+  ok(pagarMix6.status === 200 && pagarMix6.data.venta.total === 100, 'pago del pedido con 2 combos distintos -> venta 100 (40 + 60) | venta=' + pagarMix6.data?.venta?.total)
+  ok((await stockIngrediente(ingMix6.id)) === stockMix6_0 - 2, 'pagar NO vuelve a descontar (reserva ya hecha)')
+
+  const vMix6 = await req('POST', '/api/ventas', {
+    productos: [
+      { comboId: comboMixX.id, cantidad: 1 },
+      { comboId: comboMixY.id, cantidad: 1 },
+    ],
+    metodoPago: 'Efectivo',
+    usuarioId: admin.id,
+  })
+  ok(vMix6.status === 201 && vMix6.data.venta.total === 100, 'venta directa con 2 combos distintos -> 100 (40 + 60) | venta=' + vMix6.data?.venta?.total)
 
   console.log('== Pedido viejo sin reserva: al pagarse valida stock (no descuenta a ciegas) ==')
   // Simula un pedido creado ANTES del rediseño de reserva (commit 2f87347):
@@ -512,9 +665,12 @@ try {
   // siguen Pendiente_pago; de esos, solo P4 está Entregado.
   const cerrar = await req('POST', '/api/caja/cerrar', { efectivoContado: 0, usuarioId: admin.id })
   ok(cerrar.status === 200, 'cerrar caja')
-  ok(cerrar.data.pedidosPendientesPago.cantidad === 3, 'aviso: 3 pedidos Pendiente_pago')
+  ok(cerrar.data.pedidosPendientesPago.cantidad === 3, 'aviso: 3 pedidos Pendiente_pago | actual=' + (cerrar.data.pedidosPendientesPago?.cantidad ?? 'indef'))
   ok(cerrar.data.pedidosEntregadosPendientesPago.cantidad === 1, 'aviso: 1 pedido Entregado+Pendiente_pago (cantidad real, no undefined)')
   ok(cerrar.data.pedidosEntregadosPendientesPago.monto === 20, 'aviso: monto de Entregado+Pendiente_pago = 20')
+
+  const abrirMonto = await req('POST', '/api/caja/abrir', { fondoInicial: 0, usuarioId: admin.id })
+  ok(abrirMonto.status === 201, 'abrir caja para probar montos')
 
   console.log('== Monto de pago: estricto (A_domicilio) vs libre (Para_recoger) ==')
   // Para_recoger acepta CUALQUIER monto numérico válido >= total, aunque no
@@ -565,6 +721,8 @@ try {
   // Restauramos la configuración global para no afectar otras suites.
   await req('PATCH', '/api/configuracion', { opcionesCambio: [50, 100, 200, 500] })
   await req('PATCH', '/api/config/costo-envio', { costoEnvio: 5 })
+
+  await req('POST', '/api/caja/cerrar', { efectivoContado: 0, usuarioId: admin.id })
 
   console.log('== Devolución excedente rechazada ==')
   const abrir2_ = await req('POST', '/api/caja/abrir', { fondoInicial: 0, usuarioId: admin.id })
@@ -804,6 +962,7 @@ try {
     await tx.producto.deleteMany()
     await tx.ingrediente.deleteMany()
     await tx.gasto.deleteMany()
+    await tx.ingresoManual.deleteMany()
     await tx.devolucion.deleteMany()
     await tx.usuario.deleteMany()
   })

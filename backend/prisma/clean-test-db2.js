@@ -1,6 +1,6 @@
-import { PrismaClient } from '@prisma/client'
+import { createTestPrisma } from './require-test-db.js'
 
-const prisma = new PrismaClient()
+const prisma = createTestPrisma()
 
 async function main() {
   // Delete in reverse dependency order

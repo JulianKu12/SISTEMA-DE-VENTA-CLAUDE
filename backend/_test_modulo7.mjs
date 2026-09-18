@@ -81,6 +81,10 @@ try {
   const cfgPatch = await req('PATCH', '/api/configuracion', { opcionesCambio: [20, 50, 100, 200, 500] }, tokenAdmin)
   ok(cfgPatch.status === 200 && JSON.stringify(cfgPatch.data.opcionesCambio) === JSON.stringify([20, 50, 100, 200, 500]), 'PATCH /api/configuracion actualiza opciones de cambio')
 
+  console.log('== Caja abierta para capturar pedidos ==')
+  const abrirTemp7 = await req('POST', '/api/caja/abrir', { fondoInicial: 0 }, tokenAdmin)
+  ok(abrirTemp7.status === 201, 'abrir caja para capturar pedidos')
+
   console.log('== Validacion de monto_referencia_pago contra opciones ==')
   const montoInvalido = await req('POST', '/api/pedidos', {
     tipo: 'A_domicilio', origen: 'Telefono', nombreClienteLibre: 'Cliente Z',
@@ -181,6 +185,10 @@ try {
 
   const ajenoEntregado = await req('PATCH', `/api/pedidos/${pedidoNoCobrar.data.id}/estado-preparacion`, { estadoPreparacion: 'Entregado' }, tokenRep2)
   ok(ajenoEntregado.status === 403, 'repartidor 2 no puede marcar Entregado pedido de repartidor 1 -> 403')
+
+  console.log('== Cerrar caja temporal antes del flujo de ventas ==')
+  const cerrarTemp7 = await req('POST', '/api/caja/cerrar', { efectivoContado: 0 }, tokenAdmin)
+  ok(cerrarTemp7.status === 200, 'cerrar caja temporal')
 
   console.log('== Repartidor y "No cobrar" en ventas ==')
   const abrir = await req('POST', '/api/caja/abrir', { fondoInicial: 100 }, tokenAdmin)

@@ -1,7 +1,7 @@
-import { PrismaClient } from '@prisma/client'
+import { createTestPrisma } from './require-test-db.js'
 import bcrypt from 'bcrypt'
 
-const prisma = new PrismaClient()
+const prisma = createTestPrisma()
 const BASE = 'http://localhost:3001'
 
 async function main() {

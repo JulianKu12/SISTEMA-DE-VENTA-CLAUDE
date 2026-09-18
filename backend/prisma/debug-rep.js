@@ -1,6 +1,6 @@
-import { PrismaClient } from '@prisma/client'
+import { createTestPrisma } from './require-test-db.js'
 
-const prisma = new PrismaClient()
+const prisma = createTestPrisma()
 
 async function main() {
   const users = await prisma.usuario.findMany({ select: { id: true, usuario: true, tipo: true, empleado: { select: { id: true, estadoDisponibilidad: true } } } })

@@ -200,7 +200,6 @@ async function procesarCombo(tx, item, opciones = {}) {
           `El producto "${p.nombre}" del combo es de reventa directa y no admite modificadores`
         )
       }
-      console.log(`[DEBUG procesarCombo] Reventa producto: ${p.nombre} (id=${p.id}), filaCantidad=${filaCantidad}, combo.cantidad=${cantidad}, cp.cantidad=${cp.cantidad}`)
       consumos.push({ tipo: 'producto', id: p.id, cantidad: filaCantidad })
     } else {
       const basePorUnidad = p.productoIngredientes.map((pi) => ({
@@ -868,11 +867,9 @@ export async function descontarInventarioPedido(tx, { productos, pedidoId, usarD
   let movimientos = 0
   for (let i = 0; i < ventaRows.length; i++) {
     const row = ventaRows[i]
-    console.log(`[DEBUG descontarInventarioPedido] ventaRow ${i}: pedidoProductoId=${row.pedidoProductoId}, consumos=`, JSON.stringify(row.consumos))
     for (const c of row.consumos) {
       const cantidad = capShares.get(`${c.tipo}:${c.id}`)?.get(i) ?? c.cantidad
       if (!cantidad) continue
-      console.log(`[DEBUG descontarInventarioPedido] Creating movement: tipo=${c.tipo}, id=${c.id}, cantidad=${-cantidad}, pedidoProductoId=${row.pedidoProductoId}`)
       await tx.movimiento_Inventario.create({
         data: {
           ...(c.tipo === 'ingrediente' ? { ingredienteId: c.id } : { productoId: c.id }),

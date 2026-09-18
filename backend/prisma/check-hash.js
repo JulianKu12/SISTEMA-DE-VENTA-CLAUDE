@@ -1,6 +1,6 @@
-import { PrismaClient } from '@prisma/client'
+import { createTestPrisma } from './require-test-db.js'
 
-const prisma = new PrismaClient()
+const prisma = createTestPrisma()
 
 async function main() {
   const user = await prisma.usuario.findUnique({ where: { usuario: 'admin_test' } })

@@ -1,7 +1,7 @@
 import { PrismaClient } from '@prisma/client'
 import bcrypt from 'bcrypt'
 
-const prisma = new PrismaClient()
+const prisma = new PrismaClient({ datasources: { db: { url: 'file:./sec_test.db' } } })
 const BASE = 'http://localhost:3001'
 let fallas = 0
 let token = null
