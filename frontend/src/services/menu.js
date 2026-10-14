@@ -116,20 +116,6 @@ export async function eliminarProducto(id) {
   if (!respuesta.ok) throw new Error(await extraerMensaje(respuesta, 'No se pudo eliminar el producto'))
 }
 
-export async function asociarModificadorAProducto(productoId, modificadorId) {
-  const respuesta = await peticion(`/api/productos/${productoId}/modificadores`, {
-    metodo: 'POST',
-    body: { modificadorId },
-  })
-  if (!respuesta.ok) throw new Error(await extraerMensaje(respuesta, 'No se pudo asociar el modificador al producto'))
-  return respuesta.json()
-}
-
-export async function desasociarModificadorDeProducto(productoId, modificadorId) {
-  const respuesta = await peticion(`/api/productos/${productoId}/modificadores/${modificadorId}`, { metodo: 'DELETE' })
-  if (!respuesta.ok) throw new Error(await extraerMensaje(respuesta, 'No se pudo desasociar el modificador del producto'))
-}
-
 // ---------------------------------------------------------------------------
 // Modificadores
 // ---------------------------------------------------------------------------

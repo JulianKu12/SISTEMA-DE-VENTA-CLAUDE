@@ -51,7 +51,9 @@ export const obtener = asyncHandler(async (req, res) => {
 export const crear = asyncHandler(async (req, res) => {
   const { nombre, precioEspecial, productos } = req.body
   if (!nombre || typeof nombre !== 'string') throw new HttpError(400, 'El campo nombre es obligatorio')
-  if (typeof precioEspecial !== 'number') throw new HttpError(400, 'precioEspecial debe ser numérico')
+  if (!Number.isFinite(precioEspecial) || precioEspecial < 0) {
+    throw new HttpError(400, 'precioEspecial debe ser un número mayor o igual a 0')
+  }
 
   const items = await validarItemsCombo(productos)
   const conNoDisponibles = items.filter((i) => !i.disponibleHoy)
@@ -92,7 +94,9 @@ export const actualizar = asyncHandler(async (req, res) => {
     data.nombre = nombre
   }
   if (precioEspecial !== undefined) {
-    if (typeof precioEspecial !== 'number') throw new HttpError(400, 'precioEspecial debe ser numérico')
+    if (!Number.isFinite(precioEspecial) || precioEspecial < 0) {
+      throw new HttpError(400, 'precioEspecial debe ser un número mayor o igual a 0')
+    }
     data.precioEspecial = precioEspecial
   }
 

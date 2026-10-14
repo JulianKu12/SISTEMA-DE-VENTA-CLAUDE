@@ -11,7 +11,12 @@ export const autenticar = async (req, _res, next) => {
     const token = encabezado.startsWith('Bearer ') ? encabezado.slice(7) : null
     if (!token) throw new HttpError(401, 'Token de sesión requerido')
 
-    const payload = verificarToken(token)
+    let payload
+    try {
+      payload = verificarToken(token)
+    } catch (error) {
+      return next(error)
+    }
 
     // La sesión debe corresponder al token guardado (logout lo invalida).
     const usuario = await prisma.usuario.findUnique({
@@ -25,6 +30,6 @@ export const autenticar = async (req, _res, next) => {
     req.usuario = usuario
     next()
   } catch (e) {
-    next(e instanceof HttpError ? e : new HttpError(401, 'Token de sesión inválido'))
+    next(e)
   }
 }

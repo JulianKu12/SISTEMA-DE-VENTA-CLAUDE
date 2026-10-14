@@ -27,7 +27,7 @@
 | Ver todos los pedidos | ✅ | ❌ (solo los suyos asignados) | `06` |
 | Cambiar estado de pedido a En_preparacion / asignar repartidor al marcar Enviado | ✅ | ❌ | `06` |
 | Cambiar estado de pedido a Entregado (solo el suyo) | ❌ | ✅ | `06` |
-| Marcar "No cobrar" | ✅ | ✅ | `04`, `06` |
+| Marcar "No cobrar" | ✅ | ✅ (solo en ventas y pedidos `A_domicilio` permitidos por la API) | `04`, `06` |
 | Registrar gastos | ✅ | ❌ | `05` |
 | Abrir/cerrar caja | ✅ | ❌ | `05` |
 | Ver reportes completos (ventas, gastos, devoluciones, corte de caja) | ✅ | ❌ | `04`, `05` |
@@ -37,7 +37,7 @@
 | Ver historial de auditoría de "No cobrar" | ✅ | ❌ | `04` |
 
 **Reglas de negocio:**
-- El Repartidor solo tiene acceso a: lista de sus pedidos asignados (con referencia, total, cambio a llevar mostrado claramente por pedido si tiene varios — ver `06-modulo-pedidos-clientes.md`), botón para marcar "Entregado", y el checkbox de "No cobrar" si aplica en su entrega
+- El Repartidor solo tiene acceso a: lista de sus pedidos asignados (con referencia, total, cambio a llevar mostrado claramente por pedido si tiene varios — ver `06-modulo-pedidos-clientes.md`), botón para marcar "Entregado" y cobro de sus pedidos a domicilio pendientes. En la pantalla actual no puede cambiar `no_cobrar` durante la entrega: esa decisión se define al crear el pedido. La API solo permite al Repartidor crear pedidos `A_domicilio` marcados `no_cobrar` o registrar ventas marcadas `no_cobrar`.
 - Cualquier función no listada explícitamente para Repartidor le está bloqueada por default (fail-safe: por defecto denegado, no permitido)
 
 ## Nota de diseño consciente sobre el usuario Administrador compartido

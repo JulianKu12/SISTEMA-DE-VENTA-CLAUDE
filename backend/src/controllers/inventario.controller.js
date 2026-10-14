@@ -34,8 +34,11 @@ async function resolverCuenta(tx, body) {
 
 export const registrarEntrada = asyncHandler(async (req, res) => {
   const { cantidad, costo } = req.body
-  if (typeof cantidad !== 'number' || cantidad <= 0) {
+  if (!Number.isFinite(cantidad) || cantidad <= 0) {
     throw new HttpError(400, 'cantidad debe ser un número mayor a 0')
+  }
+  if (costo != null && (!Number.isFinite(costo) || costo < 0)) {
+    throw new HttpError(400, 'costo debe ser un número mayor o igual a 0')
   }
 
   const resultado = await prisma.$transaction(async (tx) => {
@@ -60,9 +63,6 @@ export const registrarEntrada = asyncHandler(async (req, res) => {
     // al Dia_Operativo que corresponda por el Módulo 05 (caja y gastos).
     let gasto = null
     if (costo != null) {
-      if (typeof costo !== 'number' || costo < 0) {
-        throw new HttpError(400, 'costo debe ser un número mayor o igual a 0')
-      }
       const usuarioId = resolverUsuario(req)
       // Se asocia al Dia_Operativo Abierto actual; si no hay ninguno, queda
       // null y se asocia al siguiente que se abra (mismo patrón que Gasto).
@@ -95,8 +95,8 @@ export const registrarEntrada = asyncHandler(async (req, res) => {
 
 export const registrarAjuste = asyncHandler(async (req, res) => {
   const { stockRealContado, motivo } = req.body
-  if (typeof stockRealContado !== 'number') {
-    throw new HttpError(400, 'stockRealContado debe ser numérico')
+  if (!Number.isFinite(stockRealContado)) {
+    throw new HttpError(400, 'stockRealContado debe ser un número finito')
   }
   if (!esEnumValido(motivo, MOTIVOS_AJUSTE)) {
     throw new HttpError(400, 'motivo inválido (Conteo_fisico, Merma u Otro)')

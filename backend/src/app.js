@@ -6,18 +6,33 @@ import apiRoutes from './routes/index.js'
 import authRoutes from './routes/auth.routes.js'
 import { autenticar } from './middlewares/auth.middleware.js'
 import { notFoundHandler, errorHandler } from './middlewares/errorHandler.js'
+import { requestLogger } from './middlewares/requestLogger.js'
 import { env } from './config/env.js'
 
 const app = express()
 
+if (env.nodeEnv === 'production') {
+  app.set('trust proxy', env.trustProxy)
+}
+
+app.use(requestLogger)
+
 // Headers de seguridad básicos (incluye una Content Security Policy razonable
 // por defecto). Para una API JSON no afecta las respuestas.
-app.use(helmet())
+app.use(helmet({
+  crossOriginResourcePolicy: false,
+  crossOriginOpenerPolicy: false,
+}))
 
 // CORS restringido: solo se aceptan los orígenes configurados en CORS_ORIGIN
 // (por defecto el frontend de desarrollo http://localhost:5173). Peticiones
 // sin cabecera Origin (curl, scripts, apps nativas) no se ven afectadas.
-app.use(cors({ origin: env.corsOrigins.includes('*') ? '*' : env.corsOrigins }))
+app.use(cors({
+  origin: env.corsOrigins.includes('*') ? '*' : env.corsOrigins,
+  credentials: false,
+  methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'X-Request-Id'],
+}))
 
 // Límite de tamaño del body (1mb) para evitar que una petición gigante tumbe
 // el servidor.
@@ -34,10 +49,10 @@ const generalLimiter = rateLimit({
   message: { message: 'Demasiadas peticiones, espera un momento antes de continuar.' },
 })
 
-// Login público; el resto del /api exige token (excepto /api/health).
+// Login y chequeos de salud públicos; el resto del /api exige token.
 app.use('/api/auth', authRoutes)
 app.use('/api', generalLimiter, (req, res, next) => {
-  if (req.path === '/health') return next()
+  if (req.path === '/health' || req.path === '/health/ready') return next()
   return autenticar(req, res, next)
 })
 app.use('/api', apiRoutes)

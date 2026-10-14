@@ -81,6 +81,7 @@ Esta es una de las reglas más importantes del sistema, corregida durante la rev
 **Reglas de negocio:**
 - Cada venta genera automáticamente sus `Movimiento_Inventario` tipo `Salida_venta`, uno por cada ingrediente de la receta (ajustado por modificadores y mitad/mitad)
 - Las entradas de inventario generan `tipo_movimiento = Entrada`, y si tienen costo, generan un `Gasto` asociado automáticamente (ver `05-modulo-caja-gastos.md`)
+- La cantidad de una entrada debe ser mayor que 0; el costo opcional debe ser mayor o igual a 0
 - `Movimiento_Inventario` tipo `Devolucion_regreso` se genera desde el módulo de Devoluciones (ver `05-modulo-caja-gastos.md`)
 - `Movimiento_Inventario` tipo `Cancelacion_regreso` se genera desde la lógica de cancelación/edición de pedidos (ver `06-modulo-pedidos-clientes.md`)
 - El `stock_actual` del ingrediente/producto (en `03-modulo-productos.md`) es siempre el resultado de sumar todos sus movimientos históricos (o se mantiene como campo calculado/cacheado por rendimiento, actualizado en cada movimiento)

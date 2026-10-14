@@ -8,9 +8,9 @@
 - `id`
 - `nombre`
 - `unidad_medida` (enum: kg, g, l, ml, pieza)
-- `stock_actual` (numérico, puede ser negativo)
-- `stock_minimo_alerta` (numérico)
-- `costo_ultima_compra` (numérico, opcional)
+- `stock_actual` (numérico, no negativo al crear; puede volverse negativo por la operación, ver `04-modulo-ventas-inventario.md`)
+- `stock_minimo_alerta` (numérico, mayor o igual a 0)
+- `costo_ultima_compra` (numérico, opcional, mayor o igual a 0)
 - `estado` (enum: Activo, Inactivo)
 - `fecha_creacion`
 
@@ -54,7 +54,7 @@
 
 **Reglas de negocio:**
 - Un producto puede tener múltiples ingredientes (su receta completa)
-- La `cantidad` siempre respeta la `unidad_medida` del ingrediente asociado — la interfaz debe mostrar la unidad junto al campo de captura (responsabilidad del usuario evitar errores, el sistema no valida rangos automáticamente)
+- La `cantidad` siempre respeta la `unidad_medida` del ingrediente asociado y debe ser mayor que 0 — la interfaz muestra la unidad junto al campo y el servidor valida que la cantidad sea positiva
 - Si `Producto.permite_mitad_y_mitad = true`, al venderse como mitad, la `cantidad` de cada ingrediente se divide entre 2, **redondeando siempre hacia arriba** — esta lógica de división se ejecuta en el momento de la venta (ver `Venta_Producto_Mitad` en `04-modulo-ventas-inventario.md`)
 
 ## Entidad: Modificador
@@ -78,6 +78,7 @@
 
 **Reglas de negocio (ejecución en el momento de la venta — ver detalle completo en `04-modulo-ventas-inventario.md`, entidad `Venta_Producto_Modificador`):**
 - Un modificador se asocia a uno o varios productos específicos (no es global)
+- Al editar un modificador, la configuración y la lista completa de productos asociados se guardan en una sola transacción; `productoIds` representa el conjunto final de asociaciones
 - `Agregar`: descuenta `cantidad_extra` adicional del `ingrediente_afectado_id`, suma `costo_adicional` al total
 - `Quitar`: no descuenta el `ingrediente_afectado_id` de la receta base
 - `Sustituir`: descuenta el `ingrediente_sustituto_id` en vez del `ingrediente_afectado_id`

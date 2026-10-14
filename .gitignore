@@ -21,6 +21,9 @@ build/
 backend/prisma/*.db
 backend/prisma/*.db-journal
 
+# Copias de seguridad SQLite (contienen datos de negocio)
+backend/backups/
+
 # Logs
 logs/
 *.log
@@ -39,3 +42,7 @@ Thumbs.db
 
 # Cobertura
 coverage/
+
+# Playwright
+test-results/
+playwright-report/

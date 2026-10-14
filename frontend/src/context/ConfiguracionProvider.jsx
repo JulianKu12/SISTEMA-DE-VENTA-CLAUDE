@@ -1,8 +1,10 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { actualizarConfiguracion, obtenerConfiguracion } from '../services/configuracion'
 import { ConfiguracionContext } from './configuracionContext'
+import { useAuth } from './useAuth'
 
 function ConfiguracionProvider({ children }) {
+  const { token } = useAuth()
   const [config, setConfig] = useState(null)
   const [cargando, setCargando] = useState(true)
   const [error, setError] = useState('')
@@ -22,6 +24,10 @@ function ConfiguracionProvider({ children }) {
   useEffect(() => {
     recargar()
   }, [recargar])
+
+  useEffect(() => {
+    if (token) recargar()
+  }, [token, recargar])
 
   const guardarConfiguracion = useCallback(async (cambios) => {
     const actualizada = await actualizarConfiguracion(cambios)

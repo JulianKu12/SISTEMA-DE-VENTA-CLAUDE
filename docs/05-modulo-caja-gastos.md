@@ -23,7 +23,7 @@
 
 **Flujo:**
 1. Se captura `fondo_inicial`
-2. El sistema pregunta: "¿Hubo ventas antes de abrir (con la caja cerrada)?"
+2. El sistema pregunta: "¿Hubo ventas antes de abrir (con la caja cerrada)?" — dado que desde el rediseño (ver `06-modulo-pedidos-clientes.md`) no es posible capturar ventas ni pedidos con la caja cerrada, esto queda únicamente como captura manual opcional al abrir
 3. Si sí: permite capturar productos vendidos (mismo flujo que una venta normal, ver `04-modulo-ventas-inventario.md`), generando `Venta` con `es_venta_previa_apertura = true` — afecta inventario, no afecta este ni ningún corte de caja
 4. Se crea el `Dia_Operativo` en estado `Abierto`
 

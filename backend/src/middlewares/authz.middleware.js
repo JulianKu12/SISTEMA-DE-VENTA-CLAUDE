@@ -15,9 +15,18 @@ export const soloAdministrador = (req, _res, next) => {
   next()
 }
 
+function rechazarRolNoRepartidor(req, next) {
+  if (req.usuario?.tipo !== 'Repartidor') {
+    next(new HttpError(403, 'El tipo de usuario no tiene permiso para realizar esta acción'))
+    return true
+  }
+  return false
+}
+
 // Repartidor puede registrar una venta SOLO con "No cobrar" (docs/07 y docs/04).
 export const repartidorNoCobrarVenta = (req, _res, next) => {
   if (req.usuario?.tipo === 'Administrador') return next()
+  if (rechazarRolNoRepartidor(req, next)) return
   if (req.body?.noCobrar !== true) {
     return next(new HttpError(403, 'El Repartidor solo puede registrar ventas con "No cobrar"'))
   }
@@ -29,6 +38,7 @@ export const repartidorNoCobrarVenta = (req, _res, next) => {
 // Administrador).
 export const repartidorNoCobrarPedido = (req, _res, next) => {
   if (req.usuario?.tipo === 'Administrador') return next()
+  if (rechazarRolNoRepartidor(req, next)) return
   if (req.body?.tipo !== 'A_domicilio' || req.body?.noCobrar !== true) {
     return next(
       new HttpError(403, 'El Repartidor solo puede crear pedidos A_domicilio con "No cobrar"')
@@ -40,6 +50,7 @@ export const repartidorNoCobrarPedido = (req, _res, next) => {
 // Repartidor solo consulta SUS propios pedidos asignados.
 export const repartidorSoloSusPedidos = (req, _res, next) => {
   if (req.usuario?.tipo === 'Administrador') return next()
+  if (rechazarRolNoRepartidor(req, next)) return
   const empleadoId = req.usuario.empleado?.id
   if (empleadoId == null || Number(req.params.repartidorId) !== empleadoId) {
     return next(new HttpError(403, 'Un Repartidor solo puede consultar sus propios pedidos'))
@@ -66,6 +77,7 @@ export const repartidorSoloEntregado = async (req, _res, next) => {
       }
       return next()
     }
+    if (rechazarRolNoRepartidor(req, next)) return
     if (req.body?.estadoPreparacion !== 'Entregado') {
       return next(new HttpError(403, 'El Repartidor solo puede marcar pedidos como Entregado'))
     }
@@ -90,6 +102,7 @@ export const repartidorSoloEntregado = async (req, _res, next) => {
 // A_domicilio ya asignados: el cobro de esos pedidos lo hace el repartidor.
 export const repartidorSoloEstadoPago = async (req, _res, next) => {
   try {
+    if (req.usuario?.tipo !== 'Administrador' && rechazarRolNoRepartidor(req, next)) return
     const pedido = await prisma.pedido.findUnique({ where: { id: Number(req.params.id) } })
     if (!pedido) {
       return next(new HttpError(404, 'Pedido no encontrado'))

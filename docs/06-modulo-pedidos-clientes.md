@@ -67,6 +67,7 @@
 
 **Reglas de negocio clave:**
 
+- **Caja abierta obligatoria al capturar:** todo pedido (incluso `Telefono` / `A_domicilio`) exige un `Dia_Operativo` en estado `Abierto` al momento de crearse; no se captura ningún pedido con la caja cerrada (el inventario se reserva siempre al capturar, ver `04-modulo-ventas-inventario.md`)
 - **Tipo de pedido no se puede cambiar una vez capturado** — si el cliente cambia de opinión (para recoger ↔ domicilio), se cancela ese pedido (con la lógica de regresar o no inventario, ver más abajo) y se crea uno nuevo
 - **Origen:** si el cliente no está presente físicamente al capturar, siempre es `Telefono`, sin importar qué tan rápido diga que llegará o pagará. Un cliente presente en mostrador que pide que le envíen el pedido a otro lugar (pagando hasta la entrega) SÍ es `Mostrador + A_domicilio` — combinación válida
 - **Estado de pago:**

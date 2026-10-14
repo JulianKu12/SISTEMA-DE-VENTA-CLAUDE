@@ -51,8 +51,14 @@ export const crear = asyncHandler(async (req, res) => {
   if (!nombre || typeof nombre !== 'string') throw new HttpError(400, 'El campo nombre es obligatorio')
   await validarNombreUnico(nombre)
   if (!esEnumValido(unidadMedida, UNIDADES_MEDIDA)) throw new HttpError(400, 'unidadMedida inválida')
-  if (typeof stockActual !== 'number' || typeof stockMinimoAlerta !== 'number') {
-    throw new HttpError(400, 'stockActual y stockMinimoAlerta deben ser numéricos')
+  if (!Number.isFinite(stockActual) || stockActual < 0) {
+    throw new HttpError(400, 'stockActual debe ser un número mayor o igual a 0')
+  }
+  if (!Number.isFinite(stockMinimoAlerta) || stockMinimoAlerta < 0) {
+    throw new HttpError(400, 'stockMinimoAlerta debe ser un número mayor o igual a 0')
+  }
+  if (costoUltimaCompra != null && (!Number.isFinite(costoUltimaCompra) || costoUltimaCompra < 0)) {
+    throw new HttpError(400, 'costoUltimaCompra debe ser un número mayor o igual a 0')
   }
 
   let ingrediente
@@ -115,6 +121,19 @@ export const actualizar = asyncHandler(async (req, res) => {
   }
   if (req.body.unidadMedida && !esEnumValido(req.body.unidadMedida, UNIDADES_MEDIDA)) {
     throw new HttpError(400, 'unidadMedida inválida')
+  }
+  if (
+    'stockMinimoAlerta' in req.body &&
+    (!Number.isFinite(req.body.stockMinimoAlerta) || req.body.stockMinimoAlerta < 0)
+  ) {
+    throw new HttpError(400, 'stockMinimoAlerta debe ser un número mayor o igual a 0')
+  }
+  if (
+    'costoUltimaCompra' in req.body &&
+    req.body.costoUltimaCompra != null &&
+    (!Number.isFinite(req.body.costoUltimaCompra) || req.body.costoUltimaCompra < 0)
+  ) {
+    throw new HttpError(400, 'costoUltimaCompra debe ser un número mayor o igual a 0')
   }
 
   const data = {}

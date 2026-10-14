@@ -152,7 +152,7 @@
 - [ ] Configurar manifest de PWA para instalación en tablet
 - [ ] Probar la instalación en un dispositivo limpio
 - [ ] Configurar actualizaciones futuras
-- [ ] Respaldo de la base de datos (estrategia de backup)
+- [x] Respaldo SQLite automático diario, creación manual y restauración verificada sin borrado automático de copias
 
 ## FASE 9: Documentación y capacitación
 - [ ] Manual del Administrador

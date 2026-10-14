@@ -18,8 +18,6 @@ import {
   reactivarProducto,
   eliminarProducto,
   obtenerProductos,
-  asociarModificadorAProducto,
-  desasociarModificadorDeProducto,
   obtenerModificadores,
   crearModificador,
   actualizarModificador,
@@ -1525,17 +1523,33 @@ function ConfiguracionMenuPage() {
 
   // ------------------------- Productos -------------------------
 
-  const guardarProducto = (payload) =>
-    modalProducto.modo === 'editar'
-      ? actualizarProducto(modalProducto.producto.id, payload).then(() => {
-          setNotificacion('Producto actualizado')
-          recargarProductos()
-          recargarCombos()
+  const guardarProducto = async (payload) => {
+    if (modalProducto.modo === 'editar') {
+      const res = await actualizarProducto(modalProducto.producto.id, payload)
+      setNotificacion('Producto actualizado')
+      recargarProductos()
+      recargarCombos()
+      if (res.aviso) {
+        setAvisoCombos({
+          titulo: 'Revisar precios de combos',
+          mensaje: res.aviso.mensaje,
+          combos: res.aviso.combos || [],
+          accion: 'revisar',
         })
-      : crearProducto(payload).then(() => {
-          setNotificacion('Producto creado')
-          recargarProductos()
-        })
+      }
+      return
+    }
+
+    await crearProducto(payload)
+    setNotificacion('Producto creado')
+    recargarProductos()
+  }
+
+  const revisarCombosAviso = () => {
+    setAvisoCombos(null)
+    setPestana('combos')
+    recargarCombos()
+  }
 
   const alternarDisponibilidad = async (prod) => {
     try {
@@ -1620,20 +1634,7 @@ function ConfiguracionMenuPage() {
 
   const guardarModificador = async (payload) => {
     if (modalModificador.modo === 'editar') {
-      const anterior = new Set(
-        modalModificador.modificador.productoModificadores?.map((pm) => pm.productoId) ?? [],
-      )
-      const deseado = new Set(payload.productoIds ?? [])
-      delete payload.productoIds
       await actualizarModificador(modalModificador.modificador.id, payload)
-      const porAsociar = [...deseado].filter((pid) => !anterior.has(pid))
-      const porDesasociar = [...anterior].filter((pid) => !deseado.has(pid))
-      for (const pid of porAsociar) {
-        await asociarModificadorAProducto(pid, modalModificador.modificador.id)
-      }
-      for (const pid of porDesasociar) {
-        await desasociarModificadorDeProducto(pid, modalModificador.modificador.id)
-      }
       setNotificacion('Modificador actualizado')
       recargarModificadores()
       return
@@ -2390,6 +2391,15 @@ function ConfiguracionMenuPage() {
                 </li>
               ))}
             </ul>
+          )}
+          {avisoCombos.accion === 'revisar' && (
+            <button
+              type="button"
+              onClick={revisarCombosAviso}
+              className="mt-4 inline-flex min-h-11 w-full items-center justify-center rounded-full bg-accent/10 px-5 py-3 text-sm font-semibold text-accent transition active:scale-[0.97] focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
+            >
+              Revisar combos
+            </button>
           )}
         </ModalConfirmar>
       )}

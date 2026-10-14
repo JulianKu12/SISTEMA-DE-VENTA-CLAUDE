@@ -66,6 +66,12 @@ async function validarReceta(ingredientes) {
       throw new HttpError(400, 'Cada ingrediente de la receta requiere ingredienteId y cantidad numérica')
     }
     const id = Number(item.ingredienteId)
+    if (!Number.isInteger(id) || id <= 0) {
+      throw new HttpError(400, 'ingredienteId debe ser un entero positivo')
+    }
+    if (!Number.isFinite(item.cantidad) || item.cantidad <= 0) {
+      throw new HttpError(400, 'Las cantidades de la receta deben ser números mayores a 0')
+    }
     if (vistos.has(id)) throw new HttpError(400, `El ingrediente ${id} está repetido en la receta`)
     vistos.add(id)
     const ingrediente = await prisma.ingrediente.findUnique({ where: { id } })
@@ -106,7 +112,9 @@ export const crear = asyncHandler(async (req, res) => {
   const { nombre, precio, tipo, permiteMitadYMitad, disponibleHoy, ingredientes, stockInicial, costo } = req.body
   if (!nombre || typeof nombre !== 'string') throw new HttpError(400, 'El campo nombre es obligatorio')
   await validarNombreUnico(nombre)
-  if (typeof precio !== 'number') throw new HttpError(400, 'El campo precio debe ser numérico')
+  if (!Number.isFinite(precio) || precio < 0) {
+    throw new HttpError(400, 'El campo precio debe ser un número mayor o igual a 0')
+  }
   if (!esEnumValido(tipo, TIPOS_PRODUCTO)) throw new HttpError(400, 'tipo inválido')
 
   let receta = null
@@ -122,11 +130,11 @@ export const crear = asyncHandler(async (req, res) => {
     if (permiteMitadYMitad === true) {
       throw new HttpError(400, 'permiteMitadYMitad solo aplica a productos con receta')
     }
-    if (stockInicial != null && (typeof stockInicial !== 'number' || stockInicial <= 0)) {
+    if (stockInicial != null && (!Number.isFinite(stockInicial) || stockInicial <= 0)) {
       throw new HttpError(400, 'stockInicial debe ser un número mayor a 0')
     }
     if (costo != null) {
-      if (typeof costo !== 'number' || costo < 0) {
+      if (!Number.isFinite(costo) || costo < 0) {
         throw new HttpError(400, 'costo debe ser un número mayor o igual a 0')
       }
       if (stockInicial == null) {
@@ -200,7 +208,9 @@ export const actualizar = asyncHandler(async (req, res) => {
     data.nombre = nombre
   }
   if (precio !== undefined) {
-    if (typeof precio !== 'number') throw new HttpError(400, 'precio debe ser numérico')
+    if (!Number.isFinite(precio) || precio < 0) {
+      throw new HttpError(400, 'precio debe ser un número mayor o igual a 0')
+    }
     data.precio = precio
   }
   if (permiteMitadYMitad !== undefined) {

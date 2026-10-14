@@ -150,11 +150,19 @@ function construirLineas(pedido) {
   const normales = []
   for (const pp of pedido.productos || []) {
     if (pp.comboId) {
-      if (!grupos.has(pp.comboId)) {
-        grupos.set(pp.comboId, {
+      // Un combo se expande en varias filas (una por producto incluido) y un
+      // pedido puede repetir el MISMO comboId con config distinta (notas o
+      // modificadores): la clave es la LÍNEA del ítem (comboItemLinea), no el
+      // comboId solo, para no fusionar dos ítems distintos.
+      const claveCombo =
+        pp.comboItemLinea != null ? `${pp.comboId}:${pp.comboItemLinea}` : `${pp.comboId}`
+      if (!grupos.has(claveCombo)) {
+        grupos.set(claveCombo, {
           tipo: 'combo',
           tipoLinea: 'combo',
           comboId: pp.comboId,
+          comboItemLinea: pp.comboItemLinea ?? null,
+          combo: pp.combo,
           nombre: pp.combo?.nombre || 'Combo',
           comboPrecioCongelado: pp.comboPrecioCongelado,
           nota: pp.notaCombo ?? '',
@@ -163,9 +171,9 @@ function construirLineas(pedido) {
           productos: [],
         })
       }
-      grupos.get(pp.comboId).filas.push(pp)
-      grupos.get(pp.comboId).pedidoProductoIds.push(pp.id)
-      grupos.get(pp.comboId).productos.push({
+      grupos.get(claveCombo).filas.push(pp)
+      grupos.get(claveCombo).pedidoProductoIds.push(pp.id)
+      grupos.get(claveCombo).productos.push({
         productoId: pp.productoId,
         nota: pp.nota ?? '',
         modificadores: pp.modificadores || [],
@@ -191,11 +199,16 @@ function construirLineas(pedido) {
       })
     }
   }
-  const combos = [...grupos.values()].map((g) => ({
-    ...g,
-    cantidad: g.filas[0]?.cantidad,
-    subtotal: (g.comboPrecioCongelado ?? 0) * (g.filas[0]?.cantidad || 0),
-  }))
+  const combos = [...grupos.values()].map((g) => {
+    // La cantidad visible es la de UNIDADES DE COMBO: cada fila expandida guarda
+    // cantidadCombos × cp.cantidad, así que se divide entre el cp del primer
+    // producto del ítem (todas las filas comparten la misma unidad de combo).
+    const fila0 = g.filas[0]
+    const cpCant =
+      g.combo?.productos?.find((cp) => cp.productoId === fila0?.productoId)?.cantidad ?? 1
+    const cantidad = (fila0?.cantidad ?? 0) / cpCant
+    return { ...g, cantidad, subtotal: (g.comboPrecioCongelado ?? 0) * cantidad }
+  })
   return [...combos, ...normales]
 }
 
@@ -1444,6 +1457,10 @@ function DetallePedidoPage() {
               ? [
                   {
                     comboId: coincidencia.comboId,
+                    // Apunta a la LÍNEA exacta del ítem (mismo comboId repetido
+                    // con config distinta = otra línea, con su propio
+                    // comboItemLinea).
+                    comboItemLinea: coincidencia.comboItemLinea ?? null,
                     cantidad: coincidencia.cantidad + nuevo.cantidad,
                   },
                 ]
@@ -1501,19 +1518,15 @@ function DetallePedidoPage() {
   const puedeDevolver = enEntregado && pedido?.venta?.id != null
 
   const montoDevueltoVenta = (ventaInfo?.devoluciones || []).reduce((a, d) => a + d.monto, 0)
-  const productosYaDevueltos = new Set(
-    (ventaInfo?.devoluciones || []).flatMap((d) => {
-      try {
-        return JSON.parse(d.ventaProductoIds || '[]')
-      } catch {
-        return []
-      }
-    }),
-  )
+  const cantidadesDevueltasPorLinea = ventaInfo
+    ? cantidadesYaDevueltasPorLinea(ventaInfo)
+    : new Map()
   const todosProductosDevueltos =
     ventaInfo != null &&
     (ventaInfo.productos?.length || 0) > 0 &&
-    (ventaInfo.productos || []).every((vp) => productosYaDevueltos.has(vp.id))
+    (ventaInfo.productos || []).every(
+      (vp) => (cantidadesDevueltasPorLinea.get(vp.id) || 0) >= (vp.cantidad || 0),
+    )
   // Solo se deshabilita el botón cuando TODA la venta quedó devuelta (monto
   // cubierto en su totalidad o todos los productos marcados como devueltos).
   // Si solo se devolvió parte (ej. la torta), queda disponible para lo pendiente.
@@ -1535,13 +1548,13 @@ function DetallePedidoPage() {
   const confirmarDevolucion = async (payload) => {
     const res = await registrarDevolucion(payload)
     setModalDevolucion(null)
+    await cargar()
     setNotificacion(
       res.mensaje ||
         (res.asociadaASiguienteDia
           ? 'Devolución registrada (se asociará a la próxima caja)'
           : 'Devolución registrada'),
     )
-    cargar()
   }
 
   const nombreCliente = pedido

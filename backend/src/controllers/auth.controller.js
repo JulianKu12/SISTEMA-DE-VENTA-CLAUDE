@@ -9,9 +9,17 @@ import { firmarToken } from '../utils/jwt.js'
 // simple y lo guarda en Usuario.token_sesion para mantener la sesión
 // persistente en el dispositivo (cierre de sesión manual al cambiar/limpiar).
 export const login = asyncHandler(async (req, res) => {
-  const { usuario, contraseña } = req.body
-  if (!usuario || !contraseña) {
+  const body = req.body
+  if (!body || typeof body !== 'object' || Array.isArray(body)) {
+    throw new HttpError(400, 'El cuerpo de la petición debe ser un objeto JSON')
+  }
+
+  const { usuario, contraseña } = body
+  if (typeof usuario !== 'string' || typeof contraseña !== 'string' || !usuario || !contraseña) {
     throw new HttpError(400, 'usuario y contraseña son obligatorios')
+  }
+  if (usuario.length > 100 || contraseña.length > 1024) {
+    throw new HttpError(400, 'usuario o contraseña exceden la longitud permitida')
   }
 
   const cuenta = await prisma.usuario.findUnique({
